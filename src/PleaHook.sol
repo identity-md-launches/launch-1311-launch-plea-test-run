@@ -81,7 +81,9 @@ contract PleaHook {
     uint256 public constant LAUNCH_MAX_BUY = 5_000_000e18;
     uint256 public constant MARKET_CAP_IMD = 5_700e18;
     uint256 public constant CAP_FLOOR = 900_000e18;
-    uint256 public constant CAP_DECAY_PER_DAY = 300_000e18;
+    /// @notice The cap may travel from the seeded inventory down to `CAP_FLOOR` in this long at the
+    /// fastest; the daily allowance is fixed at seed (`capDecayPerDay`). It only ever follows buys.
+    uint256 public constant CAP_DECAY_DAYS = 25;
     uint256 public constant MIN_TRIM = 1e18;
     uint256 public constant WALL_THRESHOLD = 1e18; // retained IMD worth a rebalance
     uint256 public constant WALL_MIN_FILL = 1_000e18; // PLEA bought by the wall worth a settle
@@ -143,6 +145,8 @@ contract PleaHook {
     Band public wall;
     uint256 public inventoryCap;
     uint256 public lastCapDecayAt;
+    /// @notice Most PLEA the cap may fall per day: (seeded inventory - CAP_FLOOR) / CAP_DECAY_DAYS.
+    uint256 public capDecayPerDay;
     uint256 public capDecayRemainder;
     /// @notice Wall reserve held as IMD by the hook.
     uint256 public retainedImd;
@@ -157,6 +161,16 @@ contract PleaHook {
     int24 private curBlockTick;
     uint64 private refBlock;
     int24 private constant MAX_REF_STEP = 200;
+    /// @notice How far the wall's placement guard may move toward a higher PLEA price per day (~4%).
+    uint256 public constant WALL_GUARD_TICKS_PER_DAY = 400;
+    /// @notice The wall's placement guard (POOL4's deployment floor, mirrored for an IMD bid). It moves
+    /// at once to any lower PLEA price the pool trades at, and toward a higher one only at
+    /// `WALL_GUARD_TICKS_PER_DAY`, toward `refTick`. The wall is never placed above it, so lifting the
+    /// wall to a pumped price means holding that price for days. In raw ticks it is a ceiling on the
+    /// band's upper tick when PLEA is token0 and a floor on its lower tick when PLEA is token1.
+    int24 public wallGuardTick;
+    uint256 private lastGuardAt;
+    uint256 private guardRemainder;
     uint256 public lastTipAt;
     /// @notice IMD the current wall was deployed with (what it has spent so far is `wallImd - imdInWall`).
     uint256 public wallImd;
@@ -364,10 +378,13 @@ contract PleaHook {
         uint256 deposited = abi.decode(res, (uint256));
         inventoryCap = deposited;
         lastCapDecayAt = block.timestamp;
+        capDecayPerDay = deposited > CAP_FLOOR ? (deposited - CAP_FLOOR) / CAP_DECAY_DAYS : 0;
         launchedAt = block.timestamp;
         refTick = initTick;
         curBlockTick = initTick;
         refBlock = uint64(block.number);
+        wallGuardTick = _guardFor(initTick);
+        lastGuardAt = block.timestamp;
         // Any PLEA dust the rounding left behind is burned: the hook holds no inventory of its own.
         uint256 dust = IERC20(plea).balanceOf(address(this));
         if (dust != 0) IPLEA(plea).burn(dust);
@@ -500,6 +517,7 @@ contract PleaHook {
         _updateBasis(trader, buy, imdBasis + imdFee, buy ? pleaAmt - pleaFee : pleaAmt + pleaFee);
 
         _applyCap();
+        _updateWallGuard(currentTick());
         _observeTick();
         _checkpoint(currentSqrtPriceX96());
 
@@ -630,15 +648,17 @@ contract PleaHook {
         if (held < inventoryCap) {
             uint256 next = held; // full ratchet
             uint256 elapsed = block.timestamp - lastCapDecayAt;
-            uint256 allowance = CAP_DECAY_PER_DAY * elapsed / 1 days;
+            uint256 rate = capDecayPerDay;
+            if (rate == 0) return;
+            uint256 allowance = rate * elapsed / 1 days;
             uint256 rateFloor = inventoryCap > allowance ? inventoryCap - allowance : 0;
             if (next < rateFloor) next = rateFloor;
             if (next < CAP_FLOOR) next = CAP_FLOOR;
             if (next < inventoryCap) {
                 uint256 used = inventoryCap - next;
                 uint256 numerator = used * 1 days + capDecayRemainder;
-                lastCapDecayAt += numerator / CAP_DECAY_PER_DAY;
-                capDecayRemainder = numerator % CAP_DECAY_PER_DAY;
+                lastCapDecayAt += numerator / rate;
+                capDecayRemainder = numerator % rate;
                 emit CapRatcheted(inventoryCap, next);
                 inventoryCap = next;
             }
@@ -711,18 +731,24 @@ contract PleaHook {
         uint256 amount = retainedImd > KEEPER_TIP ? retainedImd - KEEPER_TIP : 0;
         if (amount == 0) return (work, acted);
         int24 spot = currentTick();
+        _updateWallGuard(spot);
+        int24 guard = wallGuardTick;
         int24 lower;
         int24 upper;
         if (pleaIsZero) {
-            // IMD is token1: the band sits below spot (tick >= upper). Use the safer of spot/refTick.
+            // IMD is token1: the band sits below spot (tick >= upper). Use the safest of spot,
+            // refTick and the placement guard.
             int24 edge = spot < refTick ? spot : refTick;
+            if (guard < edge) edge = guard;
             upper = _alignDown(edge);
             lower = minTick;
             if (upper <= lower) return (work, acted);
         } else {
             // IMD is token0: the band sits above spot (tick < lower).
             int24 edge = spot > refTick ? spot : refTick;
-            lower = _alignUp(edge + 1);
+            int24 lo = edge + 1;
+            if (guard > lo) lo = guard;
+            lower = _alignUp(lo);
             upper = maxTick;
             if (lower >= upper) return (work, acted);
         }
@@ -842,6 +868,40 @@ contract PleaHook {
             refBlock = uint64(block.number);
         }
         curBlockTick = currentTick();
+    }
+
+    /// @dev The guard value an observed tick allows: the tick itself for a band below spot (PLEA is
+    /// token0), one tick above it for a band above spot (PLEA is token1).
+    function _guardFor(int24 tick) internal view returns (int24) {
+        return pleaIsZero ? tick : tick + 1;
+    }
+
+    /// @dev Moves the wall guard: at once in the safe direction (a lower PLEA price) to any observed
+    /// tick, and back toward `refTick` at most WALL_GUARD_TICKS_PER_DAY, paced by wall-clock time with
+    /// the sub-tick remainder carried and idle time capped at one day (as POOL4's deployment floor).
+    function _updateWallGuard(int24 observedTick) internal {
+        int24 g = wallGuardTick;
+        uint256 elapsed = block.timestamp - lastGuardAt;
+        if (elapsed != 0) {
+            lastGuardAt = block.timestamp;
+            int24 target = _guardFor(refTick);
+            // Unsafe direction = toward a higher PLEA price: up in raw ticks when PLEA is token0.
+            bool behind = pleaIsZero ? target > g : target < g;
+            if (behind) {
+                if (elapsed > 1 days) elapsed = 1 days;
+                uint256 numerator = WALL_GUARD_TICKS_PER_DAY * elapsed + guardRemainder;
+                uint256 allowed = numerator / 1 days;
+                guardRemainder = numerator % 1 days;
+                uint256 gap = pleaIsZero ? uint256(int256(target) - int256(g)) : uint256(int256(g) - int256(target));
+                if (allowed >= gap) g = target;
+                else g = pleaIsZero ? g + int24(int256(allowed)) : g - int24(int256(allowed));
+            } else {
+                guardRemainder = 0;
+            }
+        }
+        int24 seen = _guardFor(observedTick);
+        if (pleaIsZero ? seen < g : seen > g) g = seen;
+        wallGuardTick = g;
     }
 
     function _checkpoint(uint160 sqrtP) internal {

@@ -122,4 +122,94 @@ contract HookTest is Fixture {
         assertEq(hook.latestPrice(), latest);
         assertGt(hook.priceX96(), latest);
     }
+
+    function test_capDecayIsSetSoTheFloorIsReachableIn25Days() public view {
+        uint256 cap = hook.inventoryCap();
+        assertEq(hook.capDecayPerDay(), (cap - hook.CAP_FLOOR()) / 25);
+    }
+
+    function test_capFollowsBuysAtMostOneDayOfDecayPerDay() public {
+        buy(alice, 3_000e18); // takes far more than one day's allowance out of the market
+        uint256 held = hook.pleaInMarket();
+        uint256 cap0 = hook.inventoryCap();
+        assertGt(cap0 - held, hook.capDecayPerDay()); // the cap cannot jump to the holdings at once
+        skip(1 days);
+        buy(bob, 1e18);
+        uint256 cap1 = hook.inventoryCap();
+        assertApproxEqAbs(cap0 - cap1, hook.capDecayPerDay(), hook.capDecayPerDay() / 1000);
+        skip(30 days);
+        buy(bob, 1e18);
+        assertEq(hook.inventoryCap(), hook.pleaInMarket()); // caught up, never below the holdings
+    }
+
+    function test_aSellAboveTheCapIsTrimmedAndBurned() public {
+        buy(alice, 3_000e18);
+        skip(30 days);
+        buy(bob, 1e18); // cap catches up with the market
+        skip(DEADMAN); // free trading
+        uint256 supplyBefore = plea.totalSupply();
+        uint256 claimsBefore = hook.retainClaims();
+        vm.startPrank(alice);
+        plea.approve(address(router), type(uint256).max);
+        uint256 sold = plea.balanceOf(alice) / 4;
+        router.sellExactIn(sold, abi.encode(alice));
+        vm.stopPrank();
+        assertApproxEqRel(plea.totalSupply() + sold, supplyBefore, 0.01e18); // ~the sold PLEA burned
+        assertGt(hook.retainClaims(), claimsBefore); // and IMD moved to the wall reserve
+    }
+
+    function _pleaPriceTick(int24 t) internal view returns (int256) {
+        return hook.pleaIsZero() ? int256(t) : -int256(t);
+    }
+
+    function test_wallGuardLagsAPumpAndCapsTheWall() public {
+        int24 g0 = hook.wallGuardTick();
+        for (uint256 i; i < 40; ++i) {
+            vm.roll(vm.getBlockNumber() + 1);
+            skip(12);
+            buy(bob, 300e18); // a pump held over many blocks drags refTick along
+        }
+        int24 spot = hook.currentTick();
+        int24 g1 = hook.wallGuardTick();
+        // The guard moved at most 400 ticks a day toward the higher PLEA price (8 minutes: ~2 ticks).
+        assertLe(_pleaPriceTick(g1) - _pleaPriceTick(g0), 3);
+        assertGt(_pleaPriceTick(spot) - _pleaPriceTick(g1), 1_000);
+        vm.prank(keeper);
+        hook.rebalance();
+        (int24 lo, int24 hi,) = hook.wall();
+        // The wall's edge nearest the price is no higher a PLEA price than the guard.
+        if (hook.pleaIsZero()) assertLe(hi, g1);
+        else assertGe(lo, g1);
+    }
+
+    function test_wallGuardDropsAtOnceAndRisesFourPercentADay() public {
+        buy(alice, 3_000e18);
+        // Hold the price for weeks: the guard climbs ~400 ticks a day until it reaches the price.
+        for (uint256 i; i < 30; ++i) {
+            skip(1 days);
+            for (uint256 k; k < 3; ++k) {
+                vm.roll(vm.getBlockNumber() + 1); // refTick follows ~200 ticks per traded block
+                buy(bob, 1e18);
+            }
+        }
+        int24 g0 = hook.wallGuardTick();
+        assertApproxEqAbs(_pleaPriceTick(g0), _pleaPriceTick(hook.currentTick()), 20); // caught up to the last block close
+        // The Cabal is long dead (no verdicts), so trading is free and we can push the price down.
+        vm.startPrank(alice);
+        plea.approve(address(router), type(uint256).max);
+        router.sellExactIn(plea.balanceOf(alice) / 2, abi.encode(alice));
+        vm.stopPrank();
+        int24 g1 = hook.wallGuardTick();
+        assertEq(_pleaPriceTick(g1), _pleaPriceTick(hook.pleaIsZero() ? hook.currentTick() : hook.currentTick() + 1));
+        assertLe(_pleaPriceTick(g1), _pleaPriceTick(g0));
+        // A day later, with the price held higher, the guard has risen by at most 400 ticks.
+        for (uint256 i; i < 3; ++i) {
+            vm.roll(vm.getBlockNumber() + 1);
+            skip(8 hours);
+            buy(bob, 1_000e18);
+        }
+        int24 g2 = hook.wallGuardTick();
+        assertLe(_pleaPriceTick(g2) - _pleaPriceTick(g1), 401);
+        assertGt(_pleaPriceTick(g2), _pleaPriceTick(g1));
+    }
 }
