@@ -29,7 +29,7 @@ Launched through the IMD swarm straight from this repository (`launch.open` with
 | | |
 |---|---|
 | Supply | 1,000,000,000 PLEA (90% pool liquidity, 10% Merkle distributor) |
-| Pool | PLEA/IMD on Uniswap v4, LP fee 0, the hook is the only LP, liquidity locked forever |
+| Pool | PLEA/IMD on Uniswap v4 with a fork of POOL4's CappedBurnHook: LP fee 0, the hook is the only LP, liquidity locked forever |
 | Selling | Only through the Cabal's gate while it lives |
 | Judges | 30-seat oracle panel, quorum 17, score 0–45 |
 | Trade fee | 1.75%, paid inside the swap (0.5% back to the trader as staked IMD) |
@@ -182,4 +182,5 @@ forge test --isolate --match-path test/Launch.t.sol   # each call as its own tra
 
 ## Credits
 
-PLEA is inspired by **TokenWorks** and their CabalCoin (2025), the original "plead to the Cabal to sell" token. Thank you for the idea.
+- **TokenWorks** and their CabalCoin (2025), the original "plead to the Cabal to sell" token. PLEA is inspired by it. Thank you for the idea.
+- **POOL4**: `PleaHook` is a fork of POOL4's CappedBurnHook (Ethereum `0xc6c965bd164c483e87d0b550671798e9a3602840`), converted to the IMD side: IMD instead of ETH as the quote asset, trims burn 100%, and recovered IMD becomes an IMD-only buy wall.
