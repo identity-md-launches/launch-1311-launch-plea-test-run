@@ -1,0 +1,443 @@
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
+
+import {Test, console2} from "forge-std/Test.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {PLEA} from "../../src/PLEA.sol";
+import {CabalGate} from "../../src/CabalGate.sol";
+import {Seasons} from "../../src/Seasons.sol";
+import {Laureates} from "../../src/Laureates.sol";
+import {PleaDistributor} from "../../src/PleaDistributor.sol";
+import {PleaLaunch} from "../../src/PleaLaunch.sol";
+import {PleaHook} from "../../src/PleaHook.sol";
+import {OracleAttestation} from "../../src/OracleAttestation.sol";
+import {PoolKey} from "v4-core/types/PoolKey.sol";
+import {SwapParams} from "v4-core/types/PoolOperation.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
+
+interface IPoolSwapTest {
+    struct TestSettings {
+        bool takeClaims;
+        bool settleUsingBurn;
+    }
+
+    function swap(PoolKey memory key, SwapParams memory params, TestSettings memory s, bytes memory hookData)
+        external
+        payable
+        returns (int256);
+}
+
+interface IMintable {
+    function mint(address to, uint256 amount) external;
+}
+
+/// @dev The live Intake v2 on Sepolia: the writer's `complete` (selector 0x0f6261af, read from a
+/// live failure delivery) and the request getter.
+interface IIntakeV2 {
+    function complete(bytes32 requestId, uint8 status, bytes32 resultHash, string calldata uri, bytes calldata args)
+        external;
+
+    function requests(bytes32 requestId)
+        external
+        view
+        returns (address payer, address callbackTarget, bytes4 callbackSelector, bool completed);
+}
+
+/// Testnet run 2 rehearsal on a Sepolia fork: deploys the six launch contracts with the values in
+/// launch.json (only the oracle signer is a test key, so answers can be signed here), mines and
+/// deploys the hook, seeds, and drives every plea outcome through the live Intake v2, completed by
+/// impersonating its writer exactly as the plane does. Uses the live PoolManager, PoolSwapTest,
+/// TestIMD, test oracle IMD and imd/acc Stacker.
+///
+/// SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com forge test --match-path 'test/fork/*' -vv
+contract ForkTestnetTest is Test {
+    address constant INTAKE = 0xa43e6F75ee006411F79Ac1C84120606C2330DE82;
+    address constant WRITER = 0x3d3C0Df7C1a17d384545e9D7C8228897bD9625CB;
+    address constant ORACLE_IMD = 0x44a1Cd38474FB1748400E7DEb5F8D786ccE3F89A;
+    IERC20 constant IMD = IERC20(0x2B69099E59b05901faA1DD164fabf098bf831E82);
+    IERC20 constant SIMD = IERC20(0xF9e2EEc3B610ec6781f7438aC5Fb4bc049d81Cc1);
+    address constant STACKER = 0x293C7134Ab8f6Bf1D8fF44Ed806575f8F1bAF477;
+    address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
+    IPoolSwapTest constant PST = IPoolSwapTest(0x9B6b46e2c869aa39918Db7f52f5557FE577B6eEe);
+    uint256 constant SEASON = 18_000;
+    uint256 constant DEADMAN = 118_800;
+    uint256 constant CREDIT_GAS = 1_300_000;
+    uint256 constant START = 1792162800;
+    uint256 constant SIGNER_KEY = 0xA11CE;
+
+    IIntakeV2 intake = IIntakeV2(INTAKE);
+    PLEA plea;
+    CabalGate gate;
+    Seasons seasons;
+    Laureates laureates;
+    PleaLaunch launch;
+    PleaHook hook;
+    address owner = makeAddr("owner");
+    address[] w;
+    uint256 nonce;
+
+    function setUp() public {
+        string memory rpc = vm.envOr("SEPOLIA_RPC_URL", string(""));
+        if (bytes(rpc).length == 0) {
+            vm.skip(true);
+            return;
+        }
+        vm.createSelectFork(rpc);
+        _deploy();
+        _deployHook();
+        vm.prank(owner);
+        launch.seed();
+        for (uint256 i; i < 4; ++i) {
+            address a = makeAddr(string.concat("w", vm.toString(i)));
+            w.push(a);
+            deal(address(IMD), a, 10_000e18);
+            IMintable(ORACLE_IMD).mint(a, 100e18);
+            vm.startPrank(a);
+            IMD.approve(address(PST), type(uint256).max);
+            IMD.approve(address(gate), type(uint256).max);
+            IERC20(ORACLE_IMD).approve(address(gate), type(uint256).max);
+            plea.approve(address(gate), type(uint256).max);
+            plea.approve(address(PST), type(uint256).max);
+            vm.stopPrank();
+        }
+        _warp(vm.getBlockTimestamp() + 91 minutes); // past the launch window
+    }
+
+    function _deploy() internal {
+        plea = new PLEA(owner);
+        gate = new CabalGate(address(plea), INTAKE, ORACLE_IMD, address(IMD), vm.addr(SIGNER_KEY), SEASON, DEADMAN);
+        seasons = new Seasons(address(plea), address(gate), address(IMD));
+        laureates = new Laureates(address(plea));
+        PleaDistributor distributor = new PleaDistributor(address(plea), owner);
+        launch = new PleaLaunch(
+            address(plea),
+            address(gate),
+            address(seasons),
+            address(laureates),
+            address(distributor),
+            POOL_MANAGER,
+            address(IMD),
+            STACKER,
+            CREDIT_GAS,
+            START
+        );
+    }
+
+    function _deployHook() internal {
+        bytes memory code = abi.encodePacked(
+            type(PleaHook).creationCode,
+            abi.encode(POOL_MANAGER, address(plea), address(IMD), STACKER, owner, address(seasons), CREDIT_GAS)
+        );
+        bytes32 h = keccak256(code);
+        assertEq(h, launch.hookInitCodeHash());
+        uint160 flags = launch.FLAGS();
+        uint256 s;
+        while (uint160(launch.predict(bytes32(s))) & 0x3fff != flags) {
+            ++s;
+        }
+        hook = PleaHook(launch.deployHook(bytes32(s), code));
+    }
+
+    // ---------------------------------------------------------------- helpers
+
+    function _warp(uint256 t) internal {
+        vm.warp(t);
+        vm.roll(vm.getBlockNumber() + 1);
+    }
+
+    function _now() internal view returns (uint256) {
+        return vm.getBlockTimestamp();
+    }
+
+    function _swap(address who, bool isBuy, uint256 amountIn, bytes memory hookData) internal {
+        _swap(who, isBuy, amountIn, hookData, false);
+    }
+
+    function _swap(address who, bool isBuy, uint256 amountIn, bytes memory hookData, bool reverts) internal {
+        // A buy pays IMD for PLEA; zeroForOne when the input currency is currency0.
+        bool zeroForOne = isBuy != hook.pleaIsZero();
+        PoolKey memory key = hook.poolKey();
+        vm.prank(who);
+        if (reverts) vm.expectRevert(); // v4 wraps the hook's error
+        PST.swap(
+            key,
+            SwapParams({
+                zeroForOne: zeroForOne,
+                amountSpecified: -int256(amountIn),
+                sqrtPriceLimitX96: zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            IPoolSwapTest.TestSettings(false, false),
+            hookData
+        );
+    }
+
+    function buy(address who, uint256 imdIn) internal {
+        _swap(who, true, imdIn, abi.encode(who));
+    }
+
+    function _amount(address who) internal view returns (uint256 amount) {
+        amount = plea.balanceOf(who) / 20;
+        if (amount > 2_000_000e18) amount = 2_000_000e18;
+    }
+
+    function plead(address who) internal returns (uint256 id, bytes32 rid) {
+        uint256 amount = _amount(who);
+        vm.prank(who);
+        id = gate.submitSell(amount, "I am selling a little to pay rent and keeping the rest through every season.");
+        rid = gate.getPlea(id).intakeId;
+    }
+
+    function _attest(uint256 score) internal returns (OracleAttestation.Attestation memory a) {
+        a = OracleAttestation.Attestation({
+            requestId: keccak256(abi.encode("fork", ++nonce)),
+            chainId: 1,
+            questionHash: keccak256("q"),
+            answerType: 3,
+            answer: abi.encode(score),
+            figure: score,
+            fromBlock: 1,
+            toBlock: 2,
+            blockHash: keccak256("b"),
+            panelJobId: keccak256(abi.encode("job", nonce)),
+            panelSize: 30,
+            quorum: 17,
+            agreed: 20,
+            issuedAt: uint64(_now()),
+            expiresAt: uint64(_now() + 3600)
+        });
+    }
+
+    /// The plane's writer completes with an answer (status 0): the Intake calls onOracleResult.
+    function answer(bytes32 rid, uint256 score) internal {
+        OracleAttestation.Attestation memory a = _attest(score);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, gate.attestationDigest(a));
+        vm.prank(WRITER);
+        intake.complete(rid, 0, keccak256("attestation"), "uri", abi.encode(rid, a, abi.encodePacked(r, s, v)));
+    }
+
+    /// The plane's writer completes without an answer: the Intake calls onPleaFailure.
+    function fail(bytes32 rid, uint8 status, bytes32 reason, uint16 agreed, uint16 answered) internal {
+        vm.prank(WRITER);
+        intake.complete(rid, status, bytes32(0), "uri", abi.encode(rid, status, reason, agreed, answered, bytes("")));
+    }
+
+    /// Ticks moved toward a higher PLEA price (down in raw ticks when IMD is currency0).
+    function _up(int24 from, int24 to) internal view returns (int256) {
+        return hook.pleaIsZero() ? int256(to) - int256(from) : int256(from) - int256(to);
+    }
+
+    function _status(uint256 id) internal view returns (CabalGate.Status) {
+        return gate.getPlea(id).status;
+    }
+
+    // ---------------------------------------------------------------- tests
+
+    function test_launchStateMatchesTheManifest() public view {
+        assertEq(address(gate.intake()), INTAKE);
+        assertEq(address(gate.oracleAsset()), ORACLE_IMD);
+        assertEq(gate.SEASON(), SEASON);
+        assertEq(gate.DEADMAN(), DEADMAN);
+        assertEq(plea.hook(), address(hook));
+        assertEq(hook.creditGas(), CREDIT_GAS);
+        assertApproxEqRel(hook.capDecayPerDay(), (hook.inventoryCap() - hook.CAP_FLOOR()) / 25, 1e15, "25-day decay");
+        assertTrue(gate.cabalAlive());
+        console2.log("capDecayPerDay", hook.capDecayPerDay());
+        console2.log("wallGuardTick", int256(hook.wallGuardTick()));
+    }
+
+    function test_buyStacksCashbackAndNeedsARecipient() public {
+        address a = w[0];
+        uint256 s0 = SIMD.balanceOf(a);
+        uint256 g = gasleft();
+        buy(a, 100e18);
+        console2.log("buy gas (fork)", g - gasleft());
+        assertGt(plea.balanceOf(a), 0);
+        assertGt(SIMD.balanceOf(a), s0, "cashback stacked as sIMD");
+        _swap(a, true, 1e18, "", true); // RecipientRequired
+    }
+
+    function test_failureThroughTheLiveIntakeClearsThePlea() public {
+        address a = w[0];
+        buy(a, 200e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        (address payer, address target,, bool completed) = intake.requests(rid);
+        assertEq(payer, address(gate));
+        assertEq(target, address(gate));
+        assertFalse(completed);
+        uint64 clock = gate.lastVerdictAt();
+
+        vm.expectEmit(true, false, false, true, address(gate));
+        emit CabalGate.PleaFailed(id, 2, bytes32("disagreed"), 13, 28);
+        uint256 g = gasleft();
+        fail(rid, 2, bytes32("disagreed"), 13, 28);
+        console2.log("failure delivery gas (fork)", g - gasleft());
+
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Expired));
+        assertEq(gate.pendingOf(a), 0);
+        assertEq(gate.lastVerdictAt(), clock, "a failure is not a verdict");
+        assertEq(gate.lastDeniedAt(a), 0, "no cooldown");
+        (,,, completed) = intake.requests(rid);
+        assertTrue(completed);
+        plead(a); // may plead again at once
+    }
+
+    function test_refusalThroughTheLiveIntakeClearsThePlea() public {
+        address a = w[0];
+        buy(a, 200e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        fail(rid, 1, bytes32("body_invalid"), 0, 0);
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Expired));
+    }
+
+    function test_writerCannotPointAFailureAtAnotherRequest() public {
+        buy(w[0], 200e18);
+        buy(w[1], 200e18);
+        (uint256 id0, bytes32 r0) = plead(w[0]);
+        (uint256 id1, bytes32 r1) = plead(w[1]);
+        vm.prank(WRITER);
+        vm.expectRevert(); // FailureArgsMismatch
+        intake.complete(r0, 2, bytes32(0), "uri", abi.encode(r1, uint8(2), bytes32("failed"), 0, 0, bytes("")));
+        vm.prank(WRITER);
+        vm.expectRevert(); // FailureArgsMismatch: another status
+        intake.complete(r0, 2, bytes32(0), "uri", abi.encode(r0, uint8(1), bytes32("failed"), 0, 0, bytes("")));
+        assertEq(uint8(_status(id0)), uint8(CabalGate.Status.Pending));
+        assertEq(uint8(_status(id1)), uint8(CabalGate.Status.Pending));
+    }
+
+    function test_answerApprovesSellsAndRecords() public {
+        address a = w[0];
+        buy(a, 200e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        uint256 g = gasleft();
+        answer(rid, 45);
+        console2.log("answer delivery gas (fork)", g - gasleft());
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Approved));
+        assertEq(gate.lastVerdictAt(), _now());
+        uint256 before = IMD.balanceOf(a);
+        vm.prank(a);
+        gate.executeSell(0);
+        assertGt(IMD.balanceOf(a), before);
+        seasons.record(id);
+        (, uint256 season,) = seasons.currentSeason();
+        assertEq(seasons.bestOf(season, a)[0], 45);
+        uint256 amt = _amount(a);
+        vm.prank(a);
+        vm.expectRevert(abi.encodeWithSelector(CabalGate.Cooldown.selector, _now() + 4 hours));
+        gate.submitSell(amt, "Another plea too soon.");
+    }
+
+    function test_deniedAppealFailsThenRetries() public {
+        address a = w[0];
+        buy(a, 200e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        answer(rid, 0);
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Denied));
+        vm.prank(a);
+        uint256 ap = gate.appeal(id, 1e18, "Please reconsider; I keep the rest.");
+        fail(gate.getPlea(ap).intakeId, 2, bytes32("disagreed"), 12, 30);
+        assertEq(uint8(_status(ap)), uint8(CabalGate.Status.Expired));
+        assertFalse(gate.getPlea(id).appealed);
+        vm.prank(a);
+        uint256 retry = gate.appeal(id, 1e18, "Asking once more, in my own words.");
+        answer(gate.getPlea(retry).intakeId, 45);
+        assertEq(uint8(_status(retry)), uint8(CabalGate.Status.Approved));
+    }
+
+    function test_lateFailureAfterExpireIsHarmless() public {
+        address a = w[0];
+        buy(a, 200e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        _warp(_now() + 20 minutes + 1);
+        gate.expire(id);
+        fail(rid, 2, bytes32("failed"), 0, 0); // the failure call reverts inside the Intake's try
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Expired));
+        (,,, bool completed) = intake.requests(rid);
+        assertTrue(completed);
+    }
+
+    function test_lateAnswerAfterAFailureCannotApprove() public {
+        address a = w[0];
+        buy(a, 200e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        fail(rid, 2, bytes32("disagreed"), 13, 28);
+        vm.prank(WRITER);
+        vm.expectRevert(); // already completed
+        intake.complete(rid, 0, bytes32(0), "uri", "");
+        // even a direct call from the Intake finds no plea for that request
+        OracleAttestation.Attestation memory at = _attest(45);
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(SIGNER_KEY, gate.attestationDigest(at));
+        vm.prank(INTAKE);
+        vm.expectRevert(abi.encodeWithSelector(CabalGate.UnknownRequest.selector, rid));
+        gate.onOracleResult(rid, at, abi.encodePacked(r, s, v));
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Expired));
+    }
+
+    function test_capDecaysAtMostTheDailyRateAndTheGuardLagsAPump() public {
+        uint256 rate = hook.capDecayPerDay();
+        uint256 cap0 = hook.inventoryCap();
+        buy(w[0], 2_000e18);
+        uint256 cap1 = hook.inventoryCap();
+        assertLe(cap0 - cap1, rate, "no jump to the holdings");
+        int24 g0 = hook.wallGuardTick();
+        int24 spot0 = hook.currentTick();
+        // A pump held over many blocks: refTick follows ~200 ticks a block, the guard must not.
+        for (uint256 i; i < 10; ++i) {
+            _warp(_now() + 12);
+            buy(w[1], 300e18);
+        }
+        int24 g1 = hook.wallGuardTick();
+        int256 pumped = _up(spot0, hook.currentTick());
+        int256 jump = _up(g0, g1);
+        assertGt(pumped, 400, "the price rose");
+        assertLe(jump, 1, "the guard did not follow the pump within the same minutes");
+        _warp(_now() + 1 days);
+        buy(w[2], 1e18);
+        int24 g2 = hook.wallGuardTick();
+        int256 rise = _up(g1, g2);
+        assertLe(rise, 401, "the guard rises at most ~4% a day");
+        assertGt(rise, 0, "the guard follows a held price slowly");
+        console2.log("price rise in ticks", pumped);
+        _warp(_now() + 10 days);
+        buy(w[3], 1e18);
+        uint256 cap2 = hook.inventoryCap();
+        assertGe(cap2, hook.CAP_FLOOR());
+        assertLe(cap0 - cap2, rate * (_now() - gate.startedAt()) / 1 days + 1, "decay bounded by the daily allowance");
+        assertGt(cap1 - cap2, 0, "the cap followed the buys down");
+        console2.log("cap at seed", cap0);
+        console2.log("cap after buys", cap1);
+        console2.log("cap 11 days later", cap2);
+        console2.log("guard before pump", int256(g0));
+        console2.log("guard after pump", int256(g1));
+        console2.log("guard a day later", int256(g2));
+        hook.rebalance();
+    }
+
+    function test_deadCabalFreesTradingAndFlushesThePot() public {
+        address a = w[0];
+        buy(a, 500e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        answer(rid, 45);
+        vm.prank(a);
+        gate.executeSell(0);
+        seasons.record(id);
+        _warp(gate.lastVerdictAt() + DEADMAN + 1);
+        assertFalse(gate.cabalAlive());
+        assertFalse(plea.restricted());
+        // a plain sell through the router, still with a recipient in hookData
+        uint256 before = IMD.balanceOf(w[1]);
+        buy(w[1], 100e18);
+        _swap(w[1], false, plea.balanceOf(w[1]) / 2, abi.encode(w[1]));
+        assertGt(IMD.balanceOf(w[1]), before - 100e18);
+        uint256 amt = _amount(a);
+        vm.prank(a);
+        vm.expectRevert(CabalGate.CabalNotWatching.selector);
+        gate.submitSell(amt, "Too late, the Cabal is gone.");
+        _warp(_now() + SEASON + 2 hours);
+        while (!seasons.finished()) {
+            seasons.closeSeason(new uint256[](0));
+        }
+        assertEq(laureates.ownerOf(1), a);
+        seasons.flushToWall();
+        assertEq(seasons.pot(), 0);
+    }
+}
