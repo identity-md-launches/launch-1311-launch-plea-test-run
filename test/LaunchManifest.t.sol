@@ -43,7 +43,7 @@ abstract contract ManifestFixture is Test {
     address constant STACKER = address(0x5743C3E7);
     uint256 constant START = 1791817200;
     uint256 constant SEASON = 15 days;
-    uint256 constant CREDIT_GAS = 1300000;
+    uint256 constant CREDIT_GAS = 400_000;
 
     ManifestFactory factory;
     address owner;

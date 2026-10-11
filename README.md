@@ -157,7 +157,7 @@ Then:
 | Dead-man | 33 hours |
 | Plea timings | 20 min, 7 min, 4 h |
 | Stacker, `START`, owner | to be set |
-| Cashback credit gas | 1,300,000 |
+| Cashback credit gas | 400,000 |
 
 The season length and the dead-man are constructor values so a testnet can run a fast clock. On Ethereum mainnet the gate refuses anything below 15 days and 33 hours.
 
