@@ -30,7 +30,7 @@ Launched through the IMD swarm straight from this repository (`launch.open` with
 |---|---|
 | Supply | 1,000,000,000 PLEA (88% pool liquidity, 2% season bonus prizes, 10% Merkle distributor) |
 | Pool | PLEA/IMD on Uniswap v4 with a fork of POOL4's CappedBurnHook: LP fee 0, the hook is the only LP, liquidity locked forever |
-| Selling | Only through the Cabal's gate while it lives |
+| Selling | Through the Cabal's gate while it lives; owner-allowlisted senders are exempt |
 | Judges | 30-seat oracle panel, quorum 17, score 0–45 |
 | Trade fee | 1.75%, paid inside the swap (0.5% back to the trader as staked IMD) |
 | Seasons | 15 days each, top 10 paid, top 5 pleas minted as NFTs |
@@ -48,7 +48,7 @@ For the first **90 minutes** after trading opens, buys pay an extra launch fee t
 
 ### Pleading to sell
 
-While the Cabal lives, PLEA can leave a wallet only through `CabalGate`.
+While the Cabal lives, ordinary holders send PLEA through `CabalGate`. The owner can permanently exempt any sender with `PLEA.allow(account)`. An exempt sender can transfer to buyers or other trading venues without a plea or this hook's fees and cap trim; direct transfers to this pool's PoolManager and gate remain restricted. This add-only owner power is part of the accepted launch design.
 
 1. **Plead.** Ask to sell up to **2.5M PLEA** (and at most **35%** of your balance), with a plea of **1–280 bytes**, and pay the **0.5 IMD** oracle fee. The gate pays the IdentityMD Intake itself.
 2. **Need.** The contract computes your fact score (0–55, below). Your **need** is `70 − fact score`. If the need is above 45, no plea can pass, so the gate refuses it (`CannotPass`) before you pay.
@@ -118,7 +118,7 @@ Beyond fees, the hook keeps the market supplied the way POOL4's CappedBurnHook d
 
 | Contract | Role |
 |---|---|
-| `PLEA` | ERC-20, 1e9 supply. While the Cabal lives, PLEA leaves a wallet only through the gate. |
+| `PLEA` | ERC-20, 1e9 supply. Transfers are gated while the Cabal lives, with system-sender and permanent owner-allowlist exemptions. |
 | `CabalGate` | Pleas, the Intake request and callback, appeals, gated sells and the dead-man. |
 | `Seasons` | Points, leaderboard, `closeSeason` payouts, the final flush to the buy wall. |
 | `Laureates` | ERC-721 for each season's top 5 pleas; display names. |
@@ -136,6 +136,8 @@ Beyond fees, the hook keeps the market supplied the way POOL4's CappedBurnHook d
 ```
 PLEA → CabalGate → Seasons → Laureates → PleaDistributor → PleaLaunch
 ```
+
+The factory must deploy all six atomically. `PLEA.setLauncher` accepts the deployment transaction's transient flag **or** PLEA's deployment block, as required by the launch rehearsal. Until registration, any caller in that block can register first; atomic deployment prevents an intervening transaction. `script/Deploy.s.sol` is for local simulations only: its separate broadcasts expose this window and can also fail if they span blocks.
 
 Then:
 
@@ -162,7 +164,7 @@ Then:
 | `START` | 1792162800 (Fri 2026-10-16 15:00 UTC; the owner may seed earlier) |
 | Cashback credit gas | 1,300,000 (Sepolia's gas schedule) |
 
-This branch keeps the full Intake v2 failure function (explicit checks and the `PleaFailed` event); the six-contract deploy is about 21k gas over Ethereum's 16,777,216 per-transaction cap, which Sepolia does not enforce. `test/fork/ForkTestnet.t.sol` rehearses the whole run on a Sepolia fork against the live Intake v2:
+This branch keeps the full Intake v2 failure function (explicit checks and the `PleaFailed` event). The six-contract manifest rehearsal reports **17,204,975 gas**, a margin of **−427,759** against the 16,777,216 mainnet cap. This local measurement includes harness overhead and excludes transaction intrinsic gas; it is not a deployment receipt. The Sepolia rehearsal reports the margin without enforcing that cap, as required for this launch. See `ADAPTATION.md` for the audit and measurement details; the deployment service must simulate the actual factory transaction against Sepolia's limits. `test/fork/ForkTestnet.t.sol` rehearses the whole run on a Sepolia fork against the live Intake v2:
 
 ```
 SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com forge test --match-path 'test/fork/*' -vv
