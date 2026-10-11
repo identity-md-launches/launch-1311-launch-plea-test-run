@@ -382,9 +382,7 @@ contract TradingInvariantTest is SepoliaFixture {
         assertLe(hook.inventoryCap(), initialCap);
         uint256 used = initialCap - hook.inventoryCap();
         assertLe(used * 1 days, hook.capDecayPerDay() * (vm.getBlockTimestamp() - decayStart));
-        assertEq(
-            used * 1 days, hook.capDecayPerDay() * (hook.lastCapDecayAt() - decayStart) + hook.capDecayRemainder()
-        );
+        assertEq(used * 1 days, hook.capDecayPerDay() * (hook.lastCapDecayAt() - decayStart) + hook.capDecayRemainder());
         for (uint256 i; i < users.length; ++i) {
             assertEq(
                 pm.balanceOf(users[i], uint256(uint160(address(plea)))), 0, "restricted buys must not leak PLEA claims"
