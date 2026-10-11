@@ -52,7 +52,7 @@ While the Cabal lives, PLEA can leave a wallet only through `CabalGate`.
 
 1. **Plead.** Ask to sell up to **2.5M PLEA** (and at most **35%** of your balance), with a plea of **1–280 bytes**, and pay the **0.5 IMD** oracle fee. The gate pays the IdentityMD Intake itself.
 2. **Need.** The contract computes your fact score (0–55, below). Your **need** is `70 − fact score`. If the need is above 45, no plea can pass, so the gate refuses it (`CannotPass`) before you pay.
-3. **Verdict.** The judges score the plea 0–45; the signed score comes back through the Intake's callback. **Score ≥ need** is an approval.
+3. **Verdict.** The judges score the plea 0–45; the signed score comes back through the Intake's callback. **Score ≥ need** is an approval. The gate asks with Intake v2's `requestWithFailure`, so a refused or unanswered plea is cleared at once. Failures are unsigned, so the failure function only clears our own pending plea and never moves value.
 4. **Sell.** An approval opens a **7-minute** window to sell the whole amount through the gate in one swap (`executeSell(minOut)`).
 
 | Outcome | What happens |
@@ -60,7 +60,7 @@ While the Cabal lives, PLEA can leave a wallet only through `CabalGate`.
 | Approved and sold | Sold; a **4-hour** cooldown before the next plea |
 | Approved, not sold in 7 min | Lapsed; the score still counts for the season |
 | Denied | **4-hour** cooldown, with **one appeal** inside it: same or smaller amount, 0.5 IMD oracle fee + 0.35 IMD to the buy wall |
-| No verdict | Expires after **20 minutes**, or at once when the Intake reports the request finished without one (`expire(id)`, anyone) |
+| No verdict | Cleared at once by the Intake's failure function (`onPleaFailure`, Intake v2) when the request is refused or the panel gives no answer; otherwise after **20 minutes** (`expire(id)`, anyone). No cooldown, no fee back |
 
 **Plea text rules:** well-formed UTF-8 only, with no control, zero-width, bidi, tag or variation-selector characters, and no `[PLEA]` / `[/PLEA]` markers. The judges are told that the plea is untrusted text, and that any manipulation scores 0.
 
@@ -146,14 +146,17 @@ Then:
 
 2. **Open trading.** `PleaLaunch.seed()` creates the pool at a 5,700 IMD market cap and starts the Cabal. The owner may call it any time, and anyone may call it once `START` has passed.
 
-**Sepolia settings** (`launch.json`):
+**Mainnet draft** (`launch.json` on this branch; `main` keeps the Sepolia launch #1242 settings):
 
 | Setting | Value |
 |---|---|
-| Season | 5 hours (fast clock for testing) |
-| Dead-man | 33 hours (real) |
-| Plea timings | real (20 min, 7 min, 4 h) |
-| `START` | 1791817200 (Mon 2026-10-12 15:00 UTC) |
+| IMD (pool currency and oracle fee) | `0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7` |
+| Intake v2 | `0xa43e6f75ee006411f79ac1c84120606c2330de82` |
+| Uniswap v4 PoolManager | `0x000000000004444c5dc75cb358380d2e3de08a90` |
+| Season | 15 days |
+| Dead-man | 33 hours |
+| Plea timings | 20 min, 7 min, 4 h |
+| Stacker, `START`, owner | to be set |
 | Cashback credit gas | 1,300,000 |
 
 The season length and the dead-man are constructor values so a testnet can run a fast clock. On Ethereum mainnet the gate refuses anything below 15 days and 33 hours.
