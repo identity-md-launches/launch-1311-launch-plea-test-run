@@ -26,6 +26,10 @@ contract RankingResults {
         result[id] = Result(seller, score, true, startedAt);
     }
 
+    function restricted() external pure returns (bool) {
+        return true;
+    }
+
     function diedAt() external pure returns (uint64) {
         return 0;
     }

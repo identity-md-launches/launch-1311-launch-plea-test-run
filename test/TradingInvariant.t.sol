@@ -336,12 +336,13 @@ contract TradingInvariantTest is SepoliaFixture {
     }
 
     function invariant_allPleaIsAccountedForAndSupplyOnlyFallsByActualBurns() public view {
-        uint256 sum = plea.balanceOf(address(pm)) + plea.balanceOf(address(distributor));
+        uint256 sum =
+            plea.balanceOf(address(pm)) + plea.balanceOf(address(distributor)) + plea.balanceOf(address(seasons));
         for (uint256 i; i < users.length; ++i) {
             sum += plea.balanceOf(users[i]);
         }
         assertEq(sum, plea.totalSupply());
-        assertEq(plea.totalSupply() + hook.totalBurned() + seedBurn, 1_000_000_000e18);
+        assertEq(plea.totalSupply() + hook.totalBurned() + seedBurn + seasons.bonusBurned(), 1_000_000_000e18);
         assertEq(plea.balanceOf(address(hook)), 0);
         assertEq(plea.balanceOf(address(gate)), 0);
         assertEq(plea.balanceOf(address(router)), 0);

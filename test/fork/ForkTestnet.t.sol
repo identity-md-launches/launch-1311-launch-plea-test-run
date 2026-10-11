@@ -238,6 +238,7 @@ contract ForkTestnetTest is Test {
         assertEq(gate.SEASON(), SEASON);
         assertEq(gate.DEADMAN(), DEADMAN);
         assertEq(plea.hook(), address(hook));
+        assertEq(plea.balanceOf(address(seasons)), 20_000_000e18);
         assertEq(hook.creditGas(), CREDIT_GAS);
         assertApproxEqRel(hook.capDecayPerDay(), (hook.inventoryCap() - hook.CAP_FLOOR()) / 25, 1e15, "25-day decay");
         assertTrue(gate.cabalAlive());
@@ -439,5 +440,33 @@ contract ForkTestnetTest is Test {
         assertEq(laureates.ownerOf(1), a);
         seasons.flushToWall();
         assertEq(seasons.pot(), 0);
+        assertEq(plea.balanceOf(address(seasons)), 0, "the unused PLEA bonus is burned");
+        assertEq(seasons.bonusBurned(), 20_000_000e18);
+    }
+
+    function test_seasonWinnerGetsThePleaBonus() public {
+        address a = w[0];
+        buy(a, 500e18);
+        uint256 t0 = gate.startedAt();
+        _warp(t0 + SEASON + 1); // season 1 (the second season), from its start
+        (uint256 id1, bytes32 r1) = plead(a);
+        answer(r1, 40);
+        vm.prank(a);
+        gate.executeSell(0);
+        _warp(_now() + 4 hours + 1);
+        (uint256 id2, bytes32 r2) = plead(a);
+        answer(r2, 41);
+        vm.prank(a);
+        gate.executeSell(0);
+        seasons.record(id1);
+        seasons.record(id2);
+        _warp(t0 + 2 * SEASON + 1 hours + 1);
+        seasons.closeSeason(new uint256[](0)); // season 0: nobody qualified, its bonus is burned
+        assertEq(seasons.bonusBurned(), 5_000_000e18);
+        uint256 before = plea.balanceOf(a);
+        seasons.closeSeason(new uint256[](0)); // season 1: a has 81 points
+        assertEq(plea.balanceOf(a) - before, 1_250_000e18);
+        assertEq(seasons.bonusBurned(), 5_000_000e18 + 3_750_000e18);
+        assertEq(plea.balanceOf(address(seasons)), 10_000_000e18);
     }
 }

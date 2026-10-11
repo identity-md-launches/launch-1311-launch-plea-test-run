@@ -362,4 +362,26 @@ contract GateTest is Fixture {
         assertTrue(intake.fail(intakeIdOf(id), 2, bytes32("disagreed"), 13, 28));
         assertLt(intake.lastCallbackGasUsed(), 100_000);
     }
+
+    // ---------------------------------------------------------------- prize PLEA and the fact score
+
+    /// A season winner who bought a week earlier and then receives prize PLEA: selling up to the
+    /// bought amount keeps the hold-time and P&L points, and the larger balance only helps the
+    /// share-of-balance points. Selling more than was bought loses those two parts.
+    function test_prizePleaOnTopOfAWeekOldBuy() public {
+        buy(alice, 50e18);
+        skip(7 days + 1);
+        buy(bob, 1e18); // fresh hourly price checkpoint
+        (, uint256 tracked,) = hook.basisOf(alice);
+        uint256 bal = plea.balanceOf(alice);
+        uint256 part = bal / 5; // 20% of the balance, all of it bought
+        assertLe(part, tracked);
+        uint8 before = gate.factScore(alice, part);
+        deal(address(plea), alice, bal * 3); // prize PLEA on top (no buy record)
+        uint8 withPrize = gate.factScore(alice, part);
+        assertGe(withPrize, before, "a prize never lowers the score for bought tokens");
+        assertEq(withPrize - before, 7, "share of balance 20% -> under 15%: 11 -> 18 points");
+        uint8 beyond = gate.factScore(alice, tracked + 1);
+        assertLt(beyond, withPrize, "selling more than was bought drops hold-time and P&L points");
+    }
 }

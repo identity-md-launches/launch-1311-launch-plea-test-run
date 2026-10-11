@@ -26,7 +26,8 @@ contract HookAdversarialTest is SepoliaFixture {
         assertEq(imd.balanceOf(alice), quoteBefore - 1);
         assertEq(plea.totalSupply() + hook.totalBurned(), supply);
         assertEq(
-            plea.balanceOf(alice) + plea.balanceOf(address(pm)) + plea.balanceOf(address(distributor)),
+            plea.balanceOf(alice) + plea.balanceOf(address(pm)) + plea.balanceOf(address(distributor))
+                + plea.balanceOf(address(seasons)),
             plea.totalSupply()
         );
     }

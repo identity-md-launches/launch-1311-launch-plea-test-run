@@ -6,7 +6,8 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IGate} from "./interfaces/IPleaParts.sol";
 
 /// @title PLEA — the sell-gated meme token
-/// @notice 1e9 supply, 18 decimals, minted once in `init` (90% hook, 10% distributor). While the
+/// @notice 1e9 supply, 18 decimals, minted once in `init` (88% hook, 2% Seasons' bonus prizes,
+/// 10% distributor). While the
 /// gate says the Cabal is watching (`restricted()`), transfers are limited: see `_update`. When
 /// the Cabal dies the restriction ends for good.
 contract PLEA is ERC20, Ownable {
@@ -69,15 +70,17 @@ contract PLEA is ERC20, Ownable {
         emit Launched(msg.sender, gate_, seasons_, laureates_, distributor_);
     }
 
-    /// @notice Records the hook and mints the supply: 90% to the hook, 10% to the distributor.
-    /// Only the launcher, once (from `deployHook`).
+    /// @notice Records the hook and mints the supply: 88% to the hook, 2% to Seasons (the PLEA
+    /// bonus prizes of the first four seasons) and 10% to the distributor. Only the launcher,
+    /// once (from `deployHook`).
     function init(address hook_, address poolManager_) external {
         if (msg.sender != launcher) revert NotLauncher();
         if (hook != address(0)) revert AlreadySet();
         if (hook_ == address(0) || poolManager_ == address(0)) revert ZeroAddress();
         hook = hook_;
         poolManager = poolManager_;
-        _mint(hook_, TOTAL_SUPPLY * 90 / 100);
+        _mint(hook_, TOTAL_SUPPLY * 88 / 100);
+        _mint(seasons, TOTAL_SUPPLY * 2 / 100);
         _mint(distributor, TOTAL_SUPPLY * 10 / 100);
         emit Initialized(hook_);
     }
@@ -107,7 +110,10 @@ contract PLEA is ERC20, Ownable {
             } else if (to == gate) {
                 // Only the gate pulls PLEA (transferFrom in executeSell); direct sends are refused.
                 if (msg.sender != gate) revert CabalIsWatching();
-            } else if (from != poolManager && from != hook && from != gate && from != distributor && !allowed[from]) {
+            } else if (
+                from != poolManager && from != hook && from != gate && from != distributor && from != seasons
+                    && !allowed[from]
+            ) {
                 revert CabalIsWatching();
             }
         }

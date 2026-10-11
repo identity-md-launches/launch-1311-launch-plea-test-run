@@ -30,6 +30,10 @@ contract FundResults {
     function die(uint64 at) external {
         diedAt = at;
     }
+
+    function restricted() external view returns (bool) {
+        return diedAt == 0 || block.timestamp < diedAt;
+    }
 }
 
 contract PrizeWall {
@@ -50,6 +54,7 @@ contract SeasonFundsTest is Test {
     MockIMD imd;
     IPoolManager pm;
     PrizeWall wall;
+    PLEA plea;
     address alice = makeAddr("fund alice");
     address bob = makeAddr("fund bob");
 
@@ -58,7 +63,7 @@ contract SeasonFundsTest is Test {
         vm.warp(gate.startedAt());
         imd = new MockIMD();
         pm = IPoolManager(deployCode("PoolManager.sol:PoolManager", abi.encode(address(this))));
-        PLEA plea = new PLEA(address(this));
+        plea = new PLEA(address(this));
         seasons = new Seasons(address(plea), address(gate), address(imd));
         Laureates laureates = new Laureates(address(plea));
         PleaDistributor distributor = new PleaDistributor(address(plea), address(this));
@@ -233,5 +238,108 @@ contract SeasonFundsTest is Test {
         assertEq(seasons.pot() + paid, uint256(first) + later);
         assertEq(seasons.rollover(), first - paid);
         assertEq(seasons.seasonFees(1), later);
+    }
+
+    // ---------------------------------------------------------------- PLEA bonus (2% of supply)
+
+    uint256 constant BONUS = 5_000_000e18;
+
+    function test_bonusIsMintedToSeasonsAndCannotBeWithdrawn() public view {
+        assertEq(plea.balanceOf(address(seasons)), 20_000_000e18);
+        assertEq(plea.balanceOf(address(wall)), 880_000_000e18);
+        assertEq(seasons.BONUS_PER_SEASON() * seasons.BONUS_SEASONS(), 20_000_000e18);
+    }
+
+    function test_bonusPaysTheTopTenAndBurnsTheUnpaidShares() public {
+        leader(0, alice, 1);
+        leader(0, bob, 3);
+        address carol = makeAddr("fund carol");
+        gate.approve(5, carol, 0); // one plea: 45 points, below the 60-point minimum
+        seasons.record(5);
+        atSeason(1);
+        skip(1 hours);
+        uint256 supply = plea.totalSupply();
+        vm.expectEmit(true, true, false, true, address(seasons));
+        emit Seasons.BonusPaid(0, alice, 1, BONUS * 2500 / 10_000);
+        vm.expectEmit(true, true, false, true, address(seasons));
+        emit Seasons.BonusPaid(0, bob, 2, BONUS * 1800 / 10_000);
+        vm.expectEmit(true, false, false, true, address(seasons));
+        emit Seasons.BonusBurned(0, BONUS * 5700 / 10_000);
+        close();
+        assertEq(plea.balanceOf(alice), 1_250_000e18);
+        assertEq(plea.balanceOf(bob), 900_000e18);
+        assertEq(plea.balanceOf(carol), 0);
+        assertEq(seasons.bonusBurned(), 2_850_000e18);
+        assertEq(plea.totalSupply(), supply - 2_850_000e18);
+        assertEq(plea.balanceOf(address(seasons)), 15_000_000e18);
+    }
+
+    function test_prizePleaStaysGatedWhileTheCabalWatches() public {
+        leader(0, alice, 1);
+        atSeason(1);
+        skip(1 hours);
+        close();
+        vm.prank(alice);
+        vm.expectRevert(PLEA.CabalIsWatching.selector);
+        plea.transfer(bob, 1);
+    }
+
+    function test_emptySeasonBurnsItsWholeBonus() public {
+        atSeason(1);
+        skip(1 hours);
+        close();
+        assertEq(seasons.bonusBurned(), BONUS);
+        assertEq(plea.balanceOf(address(seasons)), 15_000_000e18);
+    }
+
+    function test_onlyTheFirstFourSeasonsPayABonus() public {
+        for (uint256 s; s < 5; ++s) {
+            leader(s, alice, 10 * s + 1);
+        }
+        atSeason(5);
+        skip(1 hours);
+        for (uint256 s; s < 4; ++s) {
+            close();
+        }
+        assertEq(plea.balanceOf(alice), 4 * 1_250_000e18);
+        assertEq(plea.balanceOf(address(seasons)), 0);
+        uint256 burned = seasons.bonusBurned();
+        close(); // season 5: IMD prizes only
+        assertEq(plea.balanceOf(alice), 4 * 1_250_000e18);
+        assertEq(seasons.bonusBurned(), burned);
+    }
+
+    function test_deathBeforeTheFourthSeasonBurnsTheRest() public {
+        leader(0, alice, 1);
+        atSeason(1);
+        skip(1);
+        gate.die(uint64(vm.getBlockTimestamp())); // dies in season 1 (the second season)
+        skip(1 hours);
+        close(); // season 0: alice is paid
+        close(); // season 1: ended by the death, nobody qualified
+        assertTrue(seasons.finished());
+        assertEq(plea.balanceOf(address(seasons)), 10_000_000e18); // seasons 2 and 3 never ran
+        uint256 supply = plea.totalSupply();
+        seasons.flushToWall();
+        assertEq(plea.balanceOf(address(seasons)), 0);
+        assertEq(plea.totalSupply(), supply - 10_000_000e18);
+        assertEq(seasons.bonusBurned(), 3_750_000e18 + 5_000_000e18 + 10_000_000e18);
+        assertEq(plea.balanceOf(alice), 1_250_000e18);
+    }
+
+    function test_flushBeforeTheEndCannotTouchTheBonus() public {
+        vm.expectRevert(Seasons.NotFinished.selector);
+        seasons.flushToWall();
+        assertEq(plea.balanceOf(address(seasons)), 20_000_000e18);
+    }
+
+    function test_failedBonusTransferIsBurnedNotStuck() public {
+        leader(0, alice, 1);
+        atSeason(1);
+        skip(1 hours);
+        vm.mockCall(address(plea), abi.encodeCall(plea.transfer, (alice, 1_250_000e18)), abi.encode(false));
+        close();
+        assertEq(plea.balanceOf(alice), 0);
+        assertEq(seasons.bonusBurned(), BONUS);
     }
 }

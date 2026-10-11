@@ -17,6 +17,7 @@ abstract contract DistributionFixture is Test {
     PLEA internal token;
     CabalGate internal cabal;
     PleaDistributor internal drop;
+    Seasons internal seasons;
     address[4] internal actors;
     address internal treasury;
     address internal manager;
@@ -36,7 +37,7 @@ abstract contract DistributionFixture is Test {
         cabal = new CabalGate(
             address(token), address(intake), address(quote), address(quote), makeAddr("signer"), 18000, 118800
         );
-        Seasons seasons = new Seasons(address(token), address(cabal), address(quote));
+        seasons = new Seasons(address(token), address(cabal), address(quote));
         Laureates laureates = new Laureates(address(token));
         drop = new PleaDistributor(address(token), address(this));
         token.setLauncher(address(cabal), address(seasons), address(laureates), address(drop));
@@ -93,7 +94,8 @@ contract DistributorAdversarialTest is DistributionFixture {
             claim(i);
         }
         assertEq(token.balanceOf(address(drop)), 100_000_000e18 - paid);
-        assertEq(token.balanceOf(treasury), 900_000_000e18);
+        assertEq(token.balanceOf(treasury), 880_000_000e18);
+        assertEq(token.balanceOf(address(seasons)), 20_000_000e18);
         assertEq(token.totalSupply(), 1_000_000_000e18);
     }
 
@@ -297,7 +299,7 @@ contract DistributionInvariantTest is DistributionFixture {
     }
 
     function invariant_supplyEqualsAllBalancesAndOnlyBurnsReduceIt() public view {
-        uint256 sum = token.balanceOf(treasury) + token.balanceOf(address(drop));
+        uint256 sum = token.balanceOf(treasury) + token.balanceOf(address(drop)) + token.balanceOf(address(seasons));
         for (uint256 i; i < 4; ++i) {
             sum += token.balanceOf(actors[i]);
         }

@@ -28,7 +28,7 @@ Launched through the IMD swarm straight from this repository (`launch.open` with
 
 | | |
 |---|---|
-| Supply | 1,000,000,000 PLEA (90% pool liquidity, 10% Merkle distributor) |
+| Supply | 1,000,000,000 PLEA (88% pool liquidity, 2% season bonus prizes, 10% Merkle distributor) |
 | Pool | PLEA/IMD on Uniswap v4 with a fork of POOL4's CappedBurnHook: LP fee 0, the hook is the only LP, liquidity locked forever |
 | Selling | Only through the Cabal's gate while it lives |
 | Judges | 30-seat oracle panel, quorum 17, score 0–45 |
@@ -87,9 +87,11 @@ The Cabal is born when trading opens and lives until **33 hours** pass without a
 - When a season ends, anyone calls `closeSeason(pleaIds)` after a **1-hour grace**:
   - the **top 10** wallets with at least **60 points** are paid **25 / 18 / 14 / 11 / 9 / 7 / 6 / 4 / 3 / 3 %** of the prize pot in IMD;
   - unpaid shares roll over to the next season;
+  - **PLEA bonus, first four seasons:** the same top 10 (same shares, same 60-point minimum) also split **5,000,000 PLEA** (0.5% of the supply) per season, from the 2% minted to `Seasons` at launch. Unpaid shares are burned at the close; nobody can withdraw the bonus, the owner included;
   - the season's **five best pleas** are minted as **Laureate** NFTs to their authors, rendered fully on chain (JSON + SVG).
 - Holders can set a display name (`Laureates.setName`, 3–20 characters `a-z 0-9 _`, unique).
-- After the Cabal dies and its last season is closed, `flushToWall()` (anyone) sends what is left to the buy wall.
+- After the Cabal dies and its last season is closed, `flushToWall()` (anyone) sends what is left to the buy wall and burns the PLEA bonus of any of the first four seasons that never ran.
+- Prize PLEA is ordinary PLEA: selling it while the Cabal lives takes a plea. It has no buy record, so it adds to the balance (better share-of-balance points) but not to the bought holdings that earn the hold-time and P&L points.
 
 ---
 
@@ -137,7 +139,7 @@ PLEA → CabalGate → Seasons → Laureates → PleaDistributor → PleaLaunch
 
 Then:
 
-1. **Deploy the hook.** `script/MineSalt.s.sol` mines a CREATE2 salt whose address carries the hook's flag bits and calls `PleaLaunch.deployHook(salt, initCode)`. The init code is committed at launch, so the result is fixed whoever calls it. PLEA then mints 90% to the hook and 10% to the distributor.
+1. **Deploy the hook.** `script/MineSalt.s.sol` mines a CREATE2 salt whose address carries the hook's flag bits and calls `PleaLaunch.deployHook(salt, initCode)`. The init code is committed at launch, so the result is fixed whoever calls it. PLEA then mints 88% to the hook, 2% to Seasons (the bonus prizes) and 10% to the distributor.
 
    ```
    LAUNCH=… POOL_MANAGER=… IMD=… STACKER=… SEASONS=… CREDIT_GAS=… \

@@ -14,6 +14,10 @@ import {IPLEA, IGate, ILaureates, IPleaHook} from "./interfaces/IPleaParts.sol";
 /// least 60 points are paid 25/18/14/11/9/7/6/4/3/3 % of the prize pot in IMD, unpaid shares roll
 /// over, and the season's five best pleas are minted as Laureates. The pot is fed by the hook's
 /// 0.25% prize fee. After the last season is closed, whatever is left goes to the buy wall.
+/// @notice PLEA bonus: Seasons holds 2% of the supply, minted to it at launch. Each of the first
+/// four seasons pays 0.5% of the supply (5,000,000 PLEA) to the same top 10 with the same shares;
+/// a share nobody qualifies for is burned when the season closes. If the Cabal dies before the
+/// fourth season, `flushToWall` burns the rest. Nobody can withdraw it.
 contract Seasons {
     using SafeERC20 for IERC20;
 
@@ -30,6 +34,8 @@ contract Seasons {
     event LaureateMinted(uint256 indexed season, uint256 indexed pleaId, uint8 rank, uint256 tokenId);
     event LeftoverToWall(uint256 amount);
     event PrizeFunded(uint256 indexed season, uint256 amount);
+    event BonusPaid(uint256 indexed season, address indexed wallet, uint8 rank, uint256 amount);
+    event BonusBurned(uint256 indexed season, uint256 amount);
 
     struct Entry {
         address wallet;
@@ -48,6 +54,9 @@ contract Seasons {
     uint256 public constant LAUREATES_PER_SEASON = 5;
     /// @notice After a season ends, time to record late approvals before it can be closed.
     uint256 public constant CLOSE_GRACE = 1 hours;
+    /// @notice The PLEA bonus: 0.5% of the supply for each of the first four seasons (2% in all).
+    uint256 public constant BONUS_SEASONS = 4;
+    uint256 public constant BONUS_PER_SEASON = 5_000_000e18;
 
     IPLEA public immutable plea;
     IGate public immutable gate;
@@ -65,6 +74,8 @@ contract Seasons {
     /// @notice Fees received during each season, excluding rollover from earlier seasons.
     mapping(uint256 => uint256) public seasonFees;
     uint256 public rollover;
+    /// @notice PLEA bonus burned so far (unpaid shares, and seasons that never ran).
+    uint256 public bonusBurned;
     uint256 private accountedPot;
     bool private redeeming;
 
@@ -266,6 +277,8 @@ contract Seasons {
         rollover = amountIn - paid;
         emit SeasonClosedOut(season, amountIn, paid);
 
+        if (season < BONUS_SEASONS) _payBonus(season, t);
+
         PleaEntry[5] memory lp = _topPleas[season];
         ILaureates l = ILaureates(plea.laureates());
         for (uint256 i; i < LAUREATES_PER_SEASON; ++i) {
@@ -277,9 +290,15 @@ contract Seasons {
     }
 
     /// @notice Once the Cabal is dead and its last season closed, anyone sends what is left (unpaid
-    /// shares) to the buy wall.
+    /// shares) to the buy wall, and burns the PLEA bonus of seasons that never ran.
     function flushToWall() external {
         if (!finished()) revert NotFinished();
+        uint256 leftover = IERC20(address(plea)).balanceOf(address(this));
+        if (leftover != 0) {
+            plea.burn(leftover);
+            bonusBurned += leftover;
+            emit BonusBurned(nextToClose, leftover);
+        }
         checkpoint();
         _redeemClaims();
         uint256 amount = pot();
@@ -332,6 +351,31 @@ contract Seasons {
         if (rank == 6) return 600;
         if (rank == 7) return 400;
         return 300;
+    }
+
+    /// @dev Pays the season's PLEA bonus to the qualifying top 10 (same shares and minimum as the
+    /// IMD prizes) and burns what is not paid. Seasons is an exempt sender, so the transfers work
+    /// while the Cabal watches; one that fails is burned with the rest.
+    function _payBonus(uint256 season, Entry[10] memory t) internal {
+        IERC20 token = IERC20(address(plea));
+        uint256 paid;
+        for (uint256 i; i < TOP; ++i) {
+            if (t[i].wallet == address(0) || t[i].points < MIN_POINTS) continue;
+            uint256 amount = BONUS_PER_SEASON * _shareBps(i) / 10_000;
+            (bool ok, bytes memory ret) = address(token).call(abi.encodeCall(IERC20.transfer, (t[i].wallet, amount)));
+            if (ok && (ret.length == 0 || abi.decode(ret, (bool)))) {
+                paid += amount;
+                emit BonusPaid(season, t[i].wallet, uint8(i + 1), amount);
+            }
+        }
+        uint256 unpaid = BONUS_PER_SEASON - paid;
+        uint256 held = token.balanceOf(address(this));
+        if (unpaid > held) unpaid = held;
+        if (unpaid != 0) {
+            plea.burn(unpaid);
+            bonusBurned += unpaid;
+            emit BonusBurned(season, unpaid);
+        }
     }
 
     /// @dev A transfer that fails (a blocked recipient) leaves the share in the pot.
