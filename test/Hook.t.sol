@@ -5,8 +5,12 @@ import {Fixture} from "./utils/Fixture.sol";
 import {PleaHook} from "../src/PleaHook.sol";
 import {BuyRouter} from "./utils/Mocks.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
 contract HookTest is Fixture {
+    using StateLibrary for IPoolManager;
+
     function test_everyFeeIsPaidInTheSameSwap() public {
         buy(bob, 50e18); // IMD in the pool
         uint256 ownerBefore = imd.balanceOf(OWNER);
@@ -194,6 +198,71 @@ contract HookTest is Fixture {
         int256 gap = _pleaPriceTick(hook.currentTick()) - _pleaPriceTick(hook.pleaIsZero() ? hi : lo);
         assertGe(gap, 0);
         assertLt(gap, 1_000);
+    }
+
+    function test_wallGuardIgnoresASellerChosenLimitReachedThroughAnEmptyPool() public {
+        buy(alice, 100e18);
+        skip(DEADMAN + 1); // the Cabal is dead: sells are free and the seller picks the price limit
+        int24 g0 = hook.wallGuardTick();
+        vm.prank(address(distributor));
+        plea.transfer(alice, 50_000_000e18);
+        // One tick spacing inside the usable range: strictly inside (minTick, maxTick), yet reached only
+        // after the market band's IMD is gone, through the region where no liquidity is active.
+        bool pz = hook.pleaIsZero();
+        int24 limitTick = pz ? hook.minTick() + 60 : hook.maxTick() - 60;
+        vm.startPrank(alice);
+        plea.approve(address(router), type(uint256).max);
+        router.sellExactInLimit(50_000_000e18, abi.encode(alice), TickMath.getSqrtPriceAtTick(limitTick));
+        vm.stopPrank();
+        assertEq(hook.currentTick(), limitTick, "the sell did not stop at the seller's limit");
+        assertEq(IPoolManager(address(pm)).getLiquidity(hook.poolId()), 0, "liquidity is active at the limit");
+        assertEq(hook.wallGuardTick(), g0, "the guard adopted a price limit reached through an empty pool");
+        // Spot comes back with the next buy; the wall is then placed against the market, not the limit.
+        vm.roll(vm.getBlockNumber() + 1);
+        skip(1 hours);
+        buy(bob, 50e18);
+        vm.roll(vm.getBlockNumber() + 1);
+        skip(12 hours);
+        vm.startPrank(alice);
+        imd.approve(address(hook), type(uint256).max);
+        hook.fundWall(10e18);
+        vm.stopPrank();
+        assertTrue(hook.pendingRebalance());
+        vm.prank(keeper);
+        hook.rebalance();
+        (int24 lo, int24 hi, uint128 liq) = hook.wall();
+        assertGt(liq, 0, "no wall deployed");
+        int256 gap = _pleaPriceTick(hook.currentTick()) - _pleaPriceTick(pz ? hi : lo);
+        assertGe(gap, 0);
+        assertLt(gap, 1_000);
+    }
+
+    function test_wallGuardStillDropsAtOnceToASellerChosenLimitInsideTheBand() public {
+        buy(alice, 3_000e18);
+        // Hold the pump for weeks so the guard catches up with the price (as the drop test does).
+        for (uint256 i; i < 30; ++i) {
+            skip(1 days);
+            for (uint256 k; k < 3; ++k) {
+                vm.roll(vm.getBlockNumber() + 1);
+                buy(bob, 1e18);
+            }
+        }
+        int24 g0 = hook.wallGuardTick();
+        int24 spot0 = hook.currentTick();
+        assertApproxEqAbs(_pleaPriceTick(g0), _pleaPriceTick(spot0), 20);
+        // The Cabal is long dead. A sell with the seller's own limit that stops inside the market band,
+        // where liquidity is active: PLEA really traded down to that price, and the guard follows it.
+        bool pz = hook.pleaIsZero();
+        int24 limitTick = pz ? spot0 - 600 : spot0 + 600;
+        vm.startPrank(alice);
+        plea.approve(address(router), type(uint256).max);
+        router.sellExactInLimit(plea.balanceOf(alice), abi.encode(alice), TickMath.getSqrtPriceAtTick(limitTick));
+        vm.stopPrank();
+        assertGt(IPoolManager(address(pm)).getLiquidity(hook.poolId()), 0, "the sell left the band");
+        int24 spot1 = hook.currentTick();
+        assertEq(spot1, limitTick, "the sell did not stop at the seller's limit");
+        assertLt(_pleaPriceTick(hook.wallGuardTick()), _pleaPriceTick(g0), "the guard did not drop");
+        assertEq(_pleaPriceTick(hook.wallGuardTick()), _pleaPriceTick(pz ? spot1 : spot1 + 1));
     }
 
     function test_capDecayIsSetSoTheFloorIsReachableIn25Days() public view {

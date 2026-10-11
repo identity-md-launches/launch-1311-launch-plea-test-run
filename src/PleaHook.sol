@@ -910,9 +910,11 @@ contract PleaHook {
     /// @dev Moves the wall guard: at once in the safe direction (a lower PLEA price) to any observed
     /// tick, and back toward `refTick` at most WALL_GUARD_TICKS_PER_DAY, paced by wall-clock time with
     /// the sub-tick remainder carried and idle time capped at one day (as POOL4's deployment floor).
-    /// A tick at or beyond the usable range is where a swap that emptied the pool's IMD side stopped
-    /// (its price limit), not a price PLEA traded at: the guard ignores it, or the wall would be parked
-    /// hundreds of thousands of ticks below the market for years.
+    /// A tick the pool sits at with no active liquidity is where a swap that emptied the pool's IMD
+    /// side stopped (the router's default limit at the tick extreme, or any limit the seller chose
+    /// inside the liquidity-free region below the market band), not a price PLEA traded at: the guard
+    /// ignores it, or the wall would be parked hundreds of thousands of ticks below the market for
+    /// years. A tick inside a band with liquidity was paid for in PLEA and counts.
     function _updateWallGuard(int24 observedTick) internal {
         int24 g = wallGuardTick;
         uint256 elapsed = block.timestamp - lastGuardAt;
@@ -933,7 +935,7 @@ contract PleaHook {
                 guardRemainder = 0;
             }
         }
-        if (observedTick > minTick && observedTick < maxTick) {
+        if (observedTick > minTick && observedTick < maxTick && poolManager.getLiquidity(poolId()) != 0) {
             int24 seen = _guardFor(observedTick);
             if (pleaIsZero ? seen < g : seen > g) g = seen;
         }
