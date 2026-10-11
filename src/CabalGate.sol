@@ -95,6 +95,9 @@ contract CabalGate is OracleAttestationConsumer {
     event SellExecuted(uint256 indexed id, address indexed seller, uint256 amountIn, uint256 imdOut);
     event PleaLapsed(uint256 indexed id);
     event PleaExpired(uint256 indexed id);
+    /// @notice The Intake reported no verdict for the plea (status 1 refused, 2 no answer). The
+    /// reason and counts are the Intake writer's word (unsigned); the plea was only cleared.
+    event PleaFailed(uint256 indexed id, uint8 status, bytes32 reason, uint16 agreed, uint16 answered);
 
     // ---------------------------------------------------------------- agreed numbers
     uint256 public constant ORACLE_FEE = 0.5e18;
@@ -371,13 +374,9 @@ contract CabalGate is OracleAttestationConsumer {
     /// @notice Anyone may clear a pending plea that can no longer get a verdict: 20 minutes passed,
     /// or the Intake completed the request without one (the panel disagreed or refused).
     function expire(uint256 id) external {
-        if (!_stale(pleas[id])) revert NotStale();
-        _expirePending(id);
-    }
-
-    function _expirePending(uint256 id) internal {
         Plea storage p = pleas[id];
         if (p.status != Status.Pending) revert NotPending();
+        if (!_stale(p)) revert NotStale();
         _expire(id, p);
     }
 
@@ -425,9 +424,21 @@ contract CabalGate is OracleAttestationConsumer {
     /// @notice The Intake's failure function (status 1 refused, 2 no answer). Failures are unsigned,
     /// so this only clears the plea it was asked for while it is still pending, exactly as `expire`
     /// would: no cooldown, no verdict, no clock reset, no value moved. `expire` stays as the fallback.
-    function onPleaFailure(bytes32 intakeId, uint8, bytes32, uint16, uint16, bytes calldata) external {
+    function onPleaFailure(
+        bytes32 intakeId,
+        uint8 status,
+        bytes32 reason,
+        uint16 agreed,
+        uint16 answered,
+        bytes calldata /* signature: empty until the Intake signs failures */
+    ) external {
         if (msg.sender != address(intake)) revert NotIntake();
-        _expirePending(pleaOfIntake[intakeId]);
+        uint256 id = pleaOfIntake[intakeId];
+        if (id == 0) revert UnknownRequest(intakeId);
+        Plea storage p = pleas[id];
+        if (p.status != Status.Pending) revert NotPending();
+        _expire(id, p);
+        emit PleaFailed(id, status, reason, agreed, answered);
     }
 
     // ================================================================ sell

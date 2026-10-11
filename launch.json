@@ -12,10 +12,10 @@
       "constructorArgs": [
         "$contract:PLEA",
         "0xa43e6f75ee006411f79ac1c84120606c2330de82",
-        "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
-        "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
+        "0x44a1cd38474fb1748400e7deb5f8d786cce3f89a",
+        "0x2B69099E59b05901faA1DD164fabf098bf831E82",
         "0x5598Aa9146215Bc13eb26f2c692Ad1461Fd32982",
-        "1296000",
+        "18000",
         "118800"
       ]
     },
@@ -24,7 +24,7 @@
       "constructorArgs": [
         "$contract:PLEA",
         "$contract:CabalGate",
-        "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7"
+        "0x2B69099E59b05901faA1DD164fabf098bf831E82"
       ]
     },
     {
@@ -48,13 +48,13 @@
         "$contract:Seasons",
         "$contract:Laureates",
         "$contract:PleaDistributor",
-        "0x000000000004444c5dc75cB358380D2e3dE08A90",
-        "0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7",
-        "TODO_MAINNET_STACKER",
-        "400000",
-        "TODO_START"
+        "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543",
+        "0x2B69099E59b05901faA1DD164fabf098bf831E82",
+        "0x293C7134Ab8f6Bf1D8fF44Ed806575f8F1bAF477",
+        "1300000",
+        "1792162800"
       ]
     }
   ],
-  "notes": "DRAFT for Ethereum mainnet (chain 1); not submitted. TODO before import: TODO_MAINNET_STACKER = the imd/acc Stacker on mainnet; TODO_START = the unix time anyone may seed (the owner may seed earlier); $owner to be chosen. Deploy all six contracts in the listed dependency order, with zero ETH, in one factory transaction. IMD 0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7 is both the oracle fee asset (0.5 IMD per plea, oracle.request@oracle-1) and the pool currency. Intake v2 0xa43e6f75ee006411f79ac1c84120606c2330de82: pleas are asked with requestWithFailure; onPleaFailure clears only our own still-pending plea and never moves value; expire() after 20 minutes stays as the fallback. Oracle signer 0x5598...2982. 15-day seasons (1296000 s), 33-hour dead-man (118800 s); the CabalGate constructor refuses less on chain 1. Uniswap v4 PoolManager 0x000000000004444c5dc75cB358380D2e3dE08A90, credit gas 400000. Fees, plea timings, panel 30 and quorum 17 are unchanged from the accepted Sepolia launch #1242. Changes from #1242: the cap decays to its floor in 25 days (capDecayPerDay set at seed), a POOL4-style wall placement guard, and the Intake v2 failure function. PleaHook is not a manifest entry: PleaLaunch commits to its init-code hash and deployHook(salt, initCode) deploys it with a salt mined for the hook flags; seed() opens trading."
+  "notes": "Sepolia (chain 11155111), second test run of the mainnet candidate. Deploy all six contracts in the listed dependency order, with zero ETH, in one factory transaction. Same code as the mainnet branch plus the full Intake v2 failure function (explicit checks and the PleaFailed event). Changes from launch #1242: the cap decays to its floor in 25 days (capDecayPerDay set at seed), a POOL4-style wall placement guard, and Intake v2 0xa43e6f75ee006411f79ac1c84120606c2330de82: pleas ask with requestWithFailure; onPleaFailure clears only our own still-pending plea and never moves value; expire() after 20 minutes stays as the fallback. Oracle fee asset 0x44a1... (test IMD, open mint), pool IMD TestIMD 0x2B69..., Stacker 0x293C... (imd/acc launch #1129), oracle signer 0x5598...2982. 18000-second seasons (fast test clock), 118800-second dead-man, START 1792162800 (Fri 2026-10-16 15:00 UTC; the owner may seed earlier), credit gas 1300000 (Sepolia's gas schedule: a first Stacker credit costs ~698k). Fees, plea timings, panel 30 and quorum 17 are unchanged. PleaHook is not a manifest entry: PleaLaunch commits to its init-code hash and deployHook(salt, initCode) deploys it with a salt mined for the hook flags; seed() opens trading."
 }

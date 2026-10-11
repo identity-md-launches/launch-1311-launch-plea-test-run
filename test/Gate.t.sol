@@ -299,6 +299,8 @@ contract GateTest is Fixture {
         uint256 bal = plea.balanceOf(alice);
         vm.expectEmit(true, false, false, true, address(gate));
         emit CabalGate.PleaExpired(id);
+        vm.expectEmit(true, false, false, true, address(gate));
+        emit CabalGate.PleaFailed(id, 2, bytes32("disagreed"), 13, 28);
         assertTrue(intake.fail(intakeIdOf(id), 2, bytes32("disagreed"), 13, 28));
         assertEq(uint8(gate.getPlea(id).status), uint8(CabalGate.Status.Expired));
         assertEq(gate.pendingOf(alice), 0);
@@ -336,13 +338,13 @@ contract GateTest is Fixture {
 
     function test_failureForAnUnknownOrSettledRequestDoesNothing() public {
         vm.prank(address(intake));
-        vm.expectRevert(CabalGate.NotPending.selector);
+        vm.expectRevert(abi.encodeWithSelector(CabalGate.UnknownRequest.selector, bytes32("x")));
         gate.onPleaFailure(bytes32("x"), 2, bytes32("failed"), 0, 0, "");
         uint256 id = plead(alice, plea.balanceOf(alice) / 10);
         bytes32 rid = intakeIdOf(id);
         assertTrue(answer(id, 45)); // approved
         vm.prank(address(intake));
-        vm.expectRevert(CabalGate.NotPending.selector);
+        vm.expectRevert(abi.encodeWithSelector(CabalGate.UnknownRequest.selector, rid));
         gate.onPleaFailure(rid, 2, bytes32("failed"), 0, 0, "");
         assertEq(uint8(gate.getPlea(id).status), uint8(CabalGate.Status.Approved));
     }
