@@ -123,6 +123,79 @@ contract HookTest is Fixture {
         assertGt(hook.priceX96(), latest);
     }
 
+    function test_hourlyCheckpointIsNotSetByTheTradeThatOpensTheHour() public {
+        buy(alice, 100e18);
+        skip(1 hours);
+        uint256 found = hook.priceX96();
+        buy(bob, 1e18); // the hour's first trade records the price it found, not the one it made
+        assertEq(hook.latestPrice(), found);
+        uint256 left = hook.priceX96(); // what bob's trade left: the next hour's checkpoint, nobody else's
+        assertGt(left, found);
+        skip(24 hours);
+        assertEq(hook.price24hAgo(), found);
+        uint256 amount = plea.balanceOf(alice) / 10;
+        uint8 before = gate.factScore(alice, amount);
+        // A pump as the first trade of a later hour: the hour's checkpoint is still the price before it.
+        buy(carol, 100e18);
+        assertEq(hook.latestPrice(), left);
+        assertEq(hook.price24hAgo(), found);
+        assertGt(hook.priceX96(), left * 102 / 100);
+        assertEq(gate.factScore(alice, amount), before, "a same-hour trade moved the fact score");
+    }
+
+    function test_stackerIsApprovedOnlyForTheCashbackBeingCredited() public {
+        assertEq(imd.allowance(address(hook), address(stacker)), 0);
+        vm.startPrank(alice);
+        imd.approve(address(hook), type(uint256).max);
+        hook.fundWall(1_000e18);
+        vm.stopPrank();
+        vm.prank(address(stacker));
+        vm.expectRevert();
+        imd.transferFrom(address(hook), bob, 1e18); // the wall reserve is out of the Stacker's reach
+        buy(bob, 50e18);
+        buy(alice, 10e18);
+        assertGt(simd.byProject(alice, address(hook)), 0);
+        assertEq(imd.allowance(address(hook), address(stacker)), 0); // consumed by the credit
+        assertEq(imd.balanceOf(address(hook)), 1_000e18);
+        simd.setPaused(true);
+        buy(alice, 10e18); // the credit reverts: plain IMD, and no allowance left behind
+        assertEq(imd.allowance(address(hook), address(stacker)), 0);
+        assertEq(imd.balanceOf(address(hook)), 1_000e18);
+    }
+
+    function test_wallGuardIgnoresTheEmptyPoolsPriceLimit() public {
+        buy(alice, 100e18);
+        skip(DEADMAN + 1); // the Cabal is dead: sells are free
+        int24 g0 = hook.wallGuardTick();
+        vm.prank(address(distributor));
+        plea.transfer(alice, 50_000_000e18);
+        vm.startPrank(alice);
+        plea.approve(address(router), type(uint256).max);
+        router.sellExactIn(50_000_000e18, abi.encode(alice)); // exact-in at the pool's price limit
+        vm.stopPrank();
+        int24 drained = hook.currentTick();
+        assertTrue(drained <= hook.minTick() || drained >= hook.maxTick(), "the sell did not drain the pool");
+        assertEq(hook.wallGuardTick(), g0, "an empty pool's price limit is not a traded price");
+        vm.roll(vm.getBlockNumber() + 1);
+        skip(1 hours);
+        buy(bob, 50e18);
+        vm.roll(vm.getBlockNumber() + 1);
+        skip(12 hours);
+        vm.startPrank(alice);
+        imd.approve(address(hook), type(uint256).max);
+        hook.fundWall(10e18);
+        vm.stopPrank();
+        assertTrue(hook.pendingRebalance());
+        vm.prank(keeper);
+        hook.rebalance();
+        (int24 lo, int24 hi, uint128 liq) = hook.wall();
+        assertGt(liq, 0, "no wall deployed");
+        // The wall's near edge sits just below spot, not at the price limit the drain stopped at.
+        int256 gap = _pleaPriceTick(hook.currentTick()) - _pleaPriceTick(hook.pleaIsZero() ? hi : lo);
+        assertGe(gap, 0);
+        assertLt(gap, 1_000);
+    }
+
     function test_capDecayIsSetSoTheFloorIsReachableIn25Days() public view {
         uint256 cap = hook.inventoryCap();
         assertEq(hook.capDecayPerDay(), (cap - hook.CAP_FLOOR()) / 25);

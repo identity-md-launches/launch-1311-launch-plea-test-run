@@ -66,7 +66,7 @@ While the Cabal lives, ordinary holders send PLEA through `CabalGate`. The owner
 
 ### The fact score
 
-Computed on chain at submit time (0–55). Prices come from the hook's hourly checkpoints, never the spot price.
+Computed on chain at submit time (0–55). Prices come from the hook's hourly checkpoints, never the spot price. An hour's checkpoint is the price the hour's first trade **found**, not the one it made: no trade in an hour can set the reference price that hour's pleas are scored against (a pump still has to be held through the hour before, since the next hour's checkpoint is the price it left).
 
 | Fact | Points |
 |---|---|
@@ -101,7 +101,7 @@ Every trade pays **1.75%**, settled in the same swap. There are no claims to set
 
 | Share | Goes to |
 |---|---|
-| 0.50% | Cashback to the trader as staked IMD (sIMD), through imd/acc's Stacker |
+| 0.50% | Cashback to the trader as staked IMD (sIMD), through imd/acc's Stacker (approved for exactly that cashback, per credit; the wall reserve the hook holds is never within its reach) |
 | 0.50% | The owner |
 | 0.25% | The season's prize pot (pool liquidity once the Cabal is dead) |
 | 0.25% | Pool liquidity (the IMD buy wall) |
@@ -110,7 +110,7 @@ Every trade pays **1.75%**, settled in the same swap. There are no claims to set
 Beyond fees, the hook keeps the market supplied the way POOL4's CappedBurnHook does: PLEA above an inventory cap is trimmed and **burned**, and recovered IMD is redeployed as an IMD-only **buy wall** below the price (`rebalance()`, anyone).
 
 - **Cap pace.** The cap starts at the seeded inventory and follows buys down, at most `(seeded inventory − 900k floor) ÷ 25` PLEA a day, so it can reach its floor in 25 days. It never falls below what the market actually holds. PLEA sold back above the cap is trimmed: burned, with the matching slice of IMD moved to the wall.
-- **Wall placement guard** (POOL4's deployment floor, mirrored for an IMD bid). The wall is never placed above a guard price that drops at once to any lower price PLEA trades at, and rises toward the market at most 400 ticks (~4%) a day. Lifting the wall to a pumped price would mean holding that price for days.
+- **Wall placement guard** (POOL4's deployment floor, mirrored for an IMD bid). The wall is never placed above a guard price that drops at once to any lower price PLEA trades at, and rises toward the market at most 400 ticks (~4%) a day. Lifting the wall to a pumped price would mean holding that price for days. A sell that empties the pool's IMD side (free trading after the Cabal dies) ends at the pool's price limit; that tick is not a traded price and the guard ignores it, so the wall is placed against the market once IMD is back, not parked at the extreme for years.
 
 ---
 
@@ -164,7 +164,7 @@ Then:
 | `START` | 1792162800 (Fri 2026-10-16 15:00 UTC; the owner may seed earlier) |
 | Cashback credit gas | 1,300,000 (Sepolia's gas schedule) |
 
-This branch keeps the full Intake v2 failure function (explicit checks and the `PleaFailed` event). The six-contract manifest rehearsal reports **17,204,975 gas**, a margin of **−427,759** against the 16,777,216 mainnet cap. This local measurement includes harness overhead and excludes transaction intrinsic gas; it is not a deployment receipt. The Sepolia rehearsal reports the margin without enforcing that cap, as required for this launch. See `ADAPTATION.md` for the audit and measurement details; the deployment service must simulate the actual factory transaction against Sepolia's limits. `test/fork/ForkTestnet.t.sol` rehearses the whole run on a Sepolia fork against the live Intake v2:
+This branch keeps the full Intake v2 failure function (explicit checks and the `PleaFailed` event). The six-contract manifest rehearsal reports **17,229,747 gas**, a margin of **−452,531** against the 16,777,216 mainnet cap (PleaLaunch embeds PleaHook's creation code, so the hook's revision fixes add to it). This local measurement includes harness overhead and excludes transaction intrinsic gas; it is not a deployment receipt. The Sepolia rehearsal reports the margin without enforcing that cap, as required for this launch. See `ADAPTATION.md` for the audit and measurement details; the deployment service must simulate the actual factory transaction against Sepolia's limits. `test/fork/ForkTestnet.t.sol` rehearses the whole run on a Sepolia fork against the live Intake v2:
 
 ```
 SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com forge test --match-path 'test/fork/*' -vv
