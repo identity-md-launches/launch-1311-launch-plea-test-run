@@ -3,6 +3,8 @@ pragma solidity 0.8.26;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+import {Currency} from "v4-core/types/Currency.sol";
 import {IPLEA, IGate, ILaureates, IPleaHook} from "./interfaces/IPleaParts.sol";
 
 /// @title Seasons — PLEA's leaderboard and prizes while the Cabal lives
@@ -20,17 +22,19 @@ contract Seasons {
     error SeasonClosed(uint256 season);
     error NotReady(uint256 season);
     error NotFinished();
+    error CallbackNotExpected();
 
     event Recorded(uint256 indexed pleaId, uint256 indexed season, address indexed wallet, uint8 score, uint16 points);
     event SeasonClosedOut(uint256 indexed season, uint256 pot, uint256 paid);
     event PrizePaid(uint256 indexed season, address indexed wallet, uint8 rank, uint256 amount);
     event LaureateMinted(uint256 indexed season, uint256 indexed pleaId, uint8 rank, uint256 tokenId);
     event LeftoverToWall(uint256 amount);
+    event PrizeFunded(uint256 indexed season, uint256 amount);
 
     struct Entry {
         address wallet;
         uint16 points;
-        uint64 pleaId; // the plea that last raised the total (ties go to the earlier one)
+        uint64 pleaId; // newest of the counted best three pleas (ties go to the earlier one)
     }
 
     struct PleaEntry {
@@ -53,10 +57,16 @@ contract Seasons {
     mapping(uint256 => Entry[10]) internal _top;
     mapping(uint256 => PleaEntry[5]) internal _topPleas;
     mapping(uint256 => mapping(address => uint8[3])) internal _best;
+    mapping(uint256 => mapping(address => uint64[3])) internal _bestPleaIds;
     mapping(uint256 => bool) public closed;
     mapping(uint256 => bool) public recorded;
     /// @notice The oldest season not yet closed (season 0 starts when trading opens).
     uint256 public nextToClose;
+    /// @notice Fees received during each season, excluding rollover from earlier seasons.
+    mapping(uint256 => uint256) public seasonFees;
+    uint256 public rollover;
+    uint256 private accountedPot;
+    bool private redeeming;
 
     constructor(address plea_, address gate_, address imd_) {
         plea = IPLEA(plea_);
@@ -100,9 +110,28 @@ contract Seasons {
         return (true, season, uint64(t0 + (season + 1) * SEASON));
     }
 
-    /// @notice Prize IMD a season would share out if closed now.
+    /// @notice All prize assets, including later seasons' fees and redeemable IMD claims.
+    /// A close distributes only that season's fees plus rollover, not this whole balance.
     function pot() public view returns (uint256) {
-        return imd.balanceOf(address(this));
+        IPoolManager pm = IPoolManager(plea.poolManager());
+        uint256 claims = address(pm) == address(0) ? 0 : pm.balanceOf(address(this), uint256(uint160(address(imd))));
+        return imd.balanceOf(address(this)) + claims;
+    }
+
+    /// @notice Accounts new prize assets to the running season. The hook calls this in every swap
+    /// that pays a prize fee, including fees delivered as claims. Direct donations belong to the
+    /// season when first checkpointed; donors can call immediately after transferring.
+    function checkpoint() public {
+        uint256 assets = pot();
+        uint256 added = assets - accountedPot;
+        if (added == 0) return;
+        accountedPot = assets;
+        uint256 t0 = gate.startedAt();
+        uint256 died = gate.diedAt();
+        uint256 season = t0 == 0 ? 0 : ((died == 0 ? block.timestamp : died - 1) - t0) / SEASON;
+        if (closed[season]) rollover += added;
+        else seasonFees[season] += added;
+        emit PrizeFunded(season, added);
     }
 
     /// @notice True once the Cabal is dead and its last season is closed.
@@ -133,14 +162,21 @@ contract Seasons {
         recorded[pleaId] = true;
         _insertPlea(season, uint64(pleaId), score);
         uint8[3] storage b = _best[season][seller];
+        uint64[3] storage ids = _bestPleaIds[season][seller];
         uint256 mi;
-        if (b[1] < b[mi]) mi = 1;
-        if (b[2] < b[mi]) mi = 2;
+        // Replace the lowest score, or the newest plea among equal lowest scores.
+        for (uint256 i = 1; i < 3; ++i) {
+            if (b[i] < b[mi] || (b[i] == b[mi] && ids[i] > ids[mi])) mi = i;
+        }
         uint16 pts;
-        if (score > b[mi]) {
+        if (score > b[mi] || (score == b[mi] && pleaId < ids[mi])) {
             b[mi] = score;
+            ids[mi] = uint64(pleaId);
             pts = uint16(uint256(b[0]) + b[1] + b[2]);
-            _insertWallet(season, Entry({wallet: seller, points: pts, pleaId: uint64(pleaId)}));
+            uint64 newest = ids[0];
+            if (ids[1] > newest) newest = ids[1];
+            if (ids[2] > newest) newest = ids[2];
+            _insertWallet(season, Entry({wallet: seller, points: pts, pleaId: newest}));
         }
         emit Recorded(pleaId, season, seller, score, pts);
     }
@@ -179,17 +215,22 @@ contract Seasons {
         PleaEntry[5] storage t = _topPleas[season];
         PleaEntry[5] memory m = t;
         uint256 n = LAUREATES_PER_SEASON;
-        // A newer plea needs a strictly higher score to pass an older one.
-        if (m[n - 1].pleaId != 0 && score <= m[n - 1].score) return;
+        PleaEntry memory ne = PleaEntry({pleaId: pleaId, score: score});
+        if (!_betterPlea(ne, m[n - 1])) return;
         uint256 i = n - 1;
-        while (i > 0 && (m[i - 1].pleaId == 0 || score > m[i - 1].score)) {
+        while (i > 0 && _betterPlea(ne, m[i - 1])) {
             m[i] = m[i - 1];
             --i;
         }
-        m[i] = PleaEntry({pleaId: pleaId, score: score});
+        m[i] = ne;
         for (uint256 k = i; k < n; ++k) {
             t[k] = m[k];
         }
+    }
+
+    function _betterPlea(PleaEntry memory a, PleaEntry memory b) internal pure returns (bool) {
+        if (b.pleaId == 0) return true;
+        return a.score > b.score || (a.score == b.score && a.pleaId < b.pleaId);
     }
 
     // ================================================================ closing
@@ -203,10 +244,14 @@ contract Seasons {
         uint256 season = nextToClose;
         (bool exists,, uint64 end, bool ended) = seasonBounds(season);
         if (!exists || !ended || block.timestamp < uint256(end) + CLOSE_GRACE) revert NotReady(season);
+        checkpoint();
         closed[season] = true;
         nextToClose = season + 1;
 
-        uint256 amountIn = pot();
+        uint256 amountIn = seasonFees[season] + rollover;
+        delete seasonFees[season];
+        rollover = 0;
+        _redeemClaims();
         uint256 paid;
         Entry[10] memory t = _top[season];
         for (uint256 i; i < TOP; ++i) {
@@ -217,6 +262,8 @@ contract Seasons {
                 emit PrizePaid(season, t[i].wallet, uint8(i + 1), amount);
             }
         }
+        accountedPot -= paid;
+        rollover = amountIn - paid;
         emit SeasonClosedOut(season, amountIn, paid);
 
         PleaEntry[5] memory lp = _topPleas[season];
@@ -233,12 +280,37 @@ contract Seasons {
     /// shares) to the buy wall.
     function flushToWall() external {
         if (!finished()) revert NotFinished();
+        checkpoint();
+        _redeemClaims();
         uint256 amount = pot();
         if (amount == 0) return;
+        accountedPot = 0;
+        rollover = 0;
         IPleaHook h = IPleaHook(plea.hook());
         imd.forceApprove(address(h), amount);
         h.fundWall(amount);
         emit LeftoverToWall(amount);
+    }
+
+    /// @dev A prize fee can arrive as a claim before a large buyer settles its input. Closing is
+    /// later, with the PoolManager locked and funded, so redeem it into ordinary prize IMD.
+    function _redeemClaims() internal {
+        IPoolManager pm = IPoolManager(plea.poolManager());
+        if (address(pm) == address(0)) return;
+        uint256 amount = pm.balanceOf(address(this), uint256(uint160(address(imd))));
+        if (amount == 0) return;
+        redeeming = true;
+        pm.unlock(abi.encode(amount));
+    }
+
+    function unlockCallback(bytes calldata data) external returns (bytes memory) {
+        IPoolManager pm = IPoolManager(plea.poolManager());
+        if (msg.sender != address(pm) || !redeeming) revert CallbackNotExpected();
+        redeeming = false;
+        uint256 amount = abi.decode(data, (uint256));
+        pm.burn(address(this), uint256(uint160(address(imd))), amount);
+        pm.take(Currency.wrap(address(imd)), address(this), amount);
+        return "";
     }
 
     function _tryRecord(uint256 pleaId) internal {
