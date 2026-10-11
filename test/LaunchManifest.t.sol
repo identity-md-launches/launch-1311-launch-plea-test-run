@@ -33,13 +33,16 @@ contract ManifestFactory {
 abstract contract ManifestFixture is Test {
     // Exact static constructor values from the supplied launch.json. Only $owner and earlier
     // contract references are resolved locally; no external contract is installed or called.
-    address constant INTAKE = 0x1397434cd35e8a9C8aC312A61D3A285EB31dea56;
-    address constant ORACLE_ASSET = 0x44a1Cd38474FB1748400E7DEb5F8D786ccE3F89A;
-    address constant IMD = 0x2B69099E59b05901faA1DD164fabf098bf831E82;
+    // Mainnet draft: IMD is both the oracle fee asset and the pool currency.
+    address constant INTAKE = 0xa43e6F75ee006411F79Ac1C84120606C2330DE82;
+    address constant ORACLE_ASSET = 0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7;
+    address constant IMD = 0xD34a99Bc0f67aE1bbd63C660e6d0b0dd03E263B7;
     address constant SIGNER = 0x5598Aa9146215Bc13eb26f2c692Ad1461Fd32982;
-    address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    address constant STACKER = 0x293C7134Ab8f6Bf1D8fF44Ed806575f8F1bAF477;
+    address constant POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
+    /// @dev Placeholders until launch.json has them: the mainnet Stacker and START.
+    address constant STACKER = address(0x5743C3E7);
     uint256 constant START = 1791817200;
+    uint256 constant SEASON = 15 days;
     uint256 constant CREDIT_GAS = 1300000;
 
     ManifestFactory factory;
@@ -48,7 +51,7 @@ abstract contract ManifestFixture is Test {
     address[6] expected;
 
     function setUp() public virtual {
-        vm.chainId(11155111);
+        vm.chainId(1);
         vm.roll(1000);
         vm.warp(START - 1 days);
         owner = makeAddr("manifest owner");
@@ -57,7 +60,7 @@ abstract contract ManifestFixture is Test {
         _prepare(
             1,
             "CabalGate.sol:CabalGate",
-            abi.encode(expected[0], INTAKE, ORACLE_ASSET, IMD, SIGNER, uint256(18000), uint256(118800))
+            abi.encode(expected[0], INTAKE, ORACLE_ASSET, IMD, SIGNER, SEASON, uint256(118800))
         );
         _prepare(2, "Seasons.sol:Seasons", abi.encode(expected[0], expected[1], IMD));
         _prepare(3, "Laureates.sol:Laureates", abi.encode(expected[0]));
@@ -106,14 +109,14 @@ abstract contract ManifestFixture is Test {
         assertEq(address(g.oracleAsset()), ORACLE_ASSET);
         assertEq(address(g.imd()), IMD);
         assertEq(g.oracleSigner(), SIGNER);
-        assertEq(g.SEASON(), 18000);
+        assertEq(g.SEASON(), SEASON);
         assertEq(g.DEADMAN(), 118800);
         assertEq(g.PANEL_SIZE(), 30);
         assertEq(g.QUORUM(), 17);
         assertEq(address(s.plea()), expected[0]);
         assertEq(address(s.gate()), expected[1]);
         assertEq(address(s.imd()), IMD);
-        assertEq(s.SEASON(), 18000);
+        assertEq(s.SEASON(), SEASON);
         assertEq(address(Laureates(expected[3]).plea()), expected[0]);
         assertEq(address(PleaDistributor(expected[4]).plea()), expected[0]);
         assertEq(PleaDistributor(expected[4]).owner(), owner);
@@ -139,7 +142,7 @@ abstract contract ManifestFixture is Test {
 }
 
 contract AtomicManifestTest is ManifestFixture {
-    function test_factoryDeploysExactManifestOnAnEmptySepoliaChain() public {
+    function test_factoryDeploysExactManifestOnAnEmptyMainnetChain() public {
         assertEq(
             INTAKE.code.length + ORACLE_ASSET.code.length + IMD.code.length + POOL_MANAGER.code.length
                 + STACKER.code.length,
