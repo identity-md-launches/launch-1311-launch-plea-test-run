@@ -194,6 +194,7 @@ contract GateTest is Fixture {
     }
 
     function test_noVerdictIsClearedAtOnceWhenTheIntakeCompletes() public {
+        intake.setFailureHooks(false); // a completion without a failure call: `expire` is the fallback
         uint256 id = plead(alice, plea.balanceOf(alice) / 10);
         vm.expectRevert(CabalGate.NotStale.selector);
         gate.expire(id);
@@ -283,5 +284,80 @@ contract GateTest is Fixture {
         vm.etch(SIGNER, hex"ef0100ca11bde05977b3631167028862be2a173976ca11");
         uint256 id = plead(alice, plea.balanceOf(alice) / 10);
         assertTrue(answer(id, 40));
+    }
+
+    // ---------------------------------------------------------------- Intake v2 failure function
+
+    function test_pleaAsksWithTheFailureFunction() public {
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        assertEq(intake.failureOf(intakeIdOf(id)), gate.onPleaFailure.selector);
+    }
+
+    function test_failureClearsThePendingPleaWithoutCooldownOrClock() public {
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        uint64 clock = gate.lastVerdictAt();
+        uint256 bal = plea.balanceOf(alice);
+        vm.expectEmit(true, false, false, true, address(gate));
+        emit CabalGate.PleaExpired(id);
+        assertTrue(intake.fail(intakeIdOf(id), 2, bytes32("disagreed"), 13, 28));
+        assertEq(uint8(gate.getPlea(id).status), uint8(CabalGate.Status.Expired));
+        assertEq(gate.pendingOf(alice), 0);
+        assertEq(gate.pleaOfIntake(intakeIdOf(id)), 0);
+        assertEq(gate.lastVerdictAt(), clock, "a failure is not a verdict");
+        assertEq(gate.lastDeniedAt(alice), 0);
+        assertEq(plea.balanceOf(alice), bal, "no value moves");
+        plead(alice, 1e18); // may plead again at once
+    }
+
+    function test_refusalClearsThePleaToo() public {
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        assertTrue(intake.fail(intakeIdOf(id), 1, bytes32("body_refused"), 0, 0));
+        assertEq(uint8(gate.getPlea(id).status), uint8(CabalGate.Status.Expired));
+    }
+
+    function test_failedAppealCanBeRetried() public {
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        assertTrue(answer(id, 0));
+        vm.prank(alice);
+        uint256 a = gate.appeal(id, 1e18, "Please reconsider.");
+        assertTrue(intake.fail(intakeIdOf(a), 2, bytes32("disagreed"), 12, 30));
+        assertFalse(gate.getPlea(id).appealed);
+        vm.prank(alice);
+        gate.appeal(id, 1e18, "Asking once more.");
+    }
+
+    function test_failureOnlyFromTheIntake() public {
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        bytes32 rid = intakeIdOf(id);
+        vm.expectRevert(CabalGate.NotIntake.selector);
+        gate.onPleaFailure(rid, 2, bytes32("disagreed"), 0, 0, "");
+        assertEq(uint8(gate.getPlea(id).status), uint8(CabalGate.Status.Pending));
+    }
+
+    function test_failureForAnUnknownOrSettledRequestDoesNothing() public {
+        vm.prank(address(intake));
+        vm.expectRevert(CabalGate.NotPending.selector);
+        gate.onPleaFailure(bytes32("x"), 2, bytes32("failed"), 0, 0, "");
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        bytes32 rid = intakeIdOf(id);
+        assertTrue(answer(id, 45)); // approved
+        vm.prank(address(intake));
+        vm.expectRevert(CabalGate.NotPending.selector);
+        gate.onPleaFailure(rid, 2, bytes32("failed"), 0, 0, "");
+        assertEq(uint8(gate.getPlea(id).status), uint8(CabalGate.Status.Approved));
+    }
+
+    function test_failureAfterExpireIsRefused() public {
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        bytes32 rid = intakeIdOf(id);
+        skip(20 minutes + 1);
+        gate.expire(id);
+        assertFalse(intake.fail(rid, 2, bytes32("failed"), 0, 0));
+    }
+
+    function test_failureFitsTheMainnetGas() public {
+        uint256 id = plead(alice, plea.balanceOf(alice) / 10);
+        assertTrue(intake.fail(intakeIdOf(id), 2, bytes32("disagreed"), 13, 28));
+        assertLt(intake.lastCallbackGasUsed(), 100_000);
     }
 }

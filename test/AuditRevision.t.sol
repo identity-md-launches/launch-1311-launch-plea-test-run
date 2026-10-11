@@ -147,8 +147,8 @@ contract AuditRevisionTest is Fixture {
         assertTrue(answer(id, 0));
         vm.prank(alice);
         uint256 a = gate.appeal(id, 1e18, "Please reconsider.");
-        intake.complete(intakeIdOf(a), 1, "");
-        gate.expire(a);
+        intake.complete(intakeIdOf(a), 1, ""); // the failure function clears it
+        assertEq(uint8(gate.getPlea(a).status), uint8(CabalGate.Status.Expired));
         assertFalse(gate.getPlea(id).appealed, "unjudged appeal consumed the only appeal");
         uint256 until = gate.getPlea(id).verdictAt + 4 hours;
         vm.expectRevert(abi.encodeWithSelector(CabalGate.Cooldown.selector, until));
@@ -183,8 +183,8 @@ contract AuditRevisionTest is Fixture {
         uint256 deadline = gate.getPlea(id).verdictAt + 4 hours;
         vm.prank(alice);
         uint256 a = gate.appeal(id, 1e18, "Please reconsider.");
-        intake.complete(intakeIdOf(a), 1, "");
-        gate.expire(a);
+        intake.complete(intakeIdOf(a), 1, ""); // the failure function clears it
+        assertEq(uint8(gate.getPlea(a).status), uint8(CabalGate.Status.Expired));
         vm.warp(deadline + 1);
         vm.prank(alice);
         vm.expectRevert(CabalGate.AppealClosed.selector);

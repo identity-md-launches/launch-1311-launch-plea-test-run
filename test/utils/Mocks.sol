@@ -159,6 +159,14 @@ contract MockIntake {
         bool completed;
     }
 
+    mapping(bytes32 => bytes4) public failureOf;
+    /// @dev Off: behave like Intake v1 (no failure call), to test the `expire` fallback.
+    bool public failureHooks = true;
+
+    function setFailureHooks(bool on) external {
+        failureHooks = on;
+    }
+
     uint256 public constant CALLBACK_GAS = 200_000;
     address public constant PAY_TO = address(0xFEE);
     IERC20 public immutable asset;
@@ -186,13 +194,57 @@ contract MockIntake {
         asset.transferFrom(msg.sender, PAY_TO, amount);
     }
 
+    function requestWithFailure(
+        bytes32 action,
+        bytes calldata body,
+        Callback calldata cb,
+        bytes4 onFailure,
+        address asset_,
+        uint256 amount
+    ) external returns (bytes32 id) {
+        id = this.requestFor(msg.sender, action, body, cb, asset_, amount);
+        failureOf[id] = onFailure;
+    }
+
+    /// @dev `request` on behalf of `payer` (the fee is pulled from the payer).
+    function requestFor(
+        address payer,
+        bytes32,
+        bytes calldata body,
+        Callback calldata cb,
+        address asset_,
+        uint256 amount
+    ) external returns (bytes32 id) {
+        require(msg.sender == address(this), "self");
+        require(asset_ == address(asset) && amount >= 0.5e18, "price");
+        id = keccak256(abi.encode(block.chainid, address(this), ++nonce));
+        requests[id] = Req(payer, cb.target, cb.selector, false);
+        bodyOf[id] = body;
+        lastId = id;
+        lastBody = body;
+        asset.transferFrom(payer, PAY_TO, amount);
+    }
+
+    /// @dev Status 1 or 2 with the writer's arguments, like `complete` on Intake v2.
+    function fail(bytes32 id, uint8 status, bytes32 reason, uint16 agreed, uint16 answered)
+        external
+        returns (bool delivered)
+    {
+        return this.complete(id, status, abi.encode(id, status, reason, agreed, answered, bytes("")));
+    }
+
     function complete(bytes32 id, uint8 status, bytes calldata args) external returns (bool delivered) {
         Req storage r = requests[id];
         require(r.payer != address(0), "unknown");
         require(!r.completed, "completed");
         r.completed = true;
-        if (status == 0 && r.target != address(0)) {
-            bytes memory data = bytes.concat(r.selector, args);
+        bytes4 sel = status == 0 ? r.selector : failureOf[id];
+        bytes memory payload = args;
+        if (status != 0 && args.length == 0) {
+            payload = abi.encode(id, status, bytes32("failed"), uint16(0), uint16(0), bytes(""));
+        }
+        if (r.target != address(0) && (status == 0 || (failureHooks && sel != bytes4(0)))) {
+            bytes memory data = bytes.concat(sel, payload);
             address t = r.target;
             uint256 g = gasleft();
             assembly {

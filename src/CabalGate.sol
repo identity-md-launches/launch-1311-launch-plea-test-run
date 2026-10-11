@@ -313,10 +313,11 @@ contract CabalGate is OracleAttestationConsumer {
         Plea storage p = pleas[id];
         oracleAsset.safeTransferFrom(msg.sender, address(this), ORACLE_FEE);
         oracleAsset.forceApprove(address(intake), ORACLE_FEE);
-        bytes32 rid = intake.request(
+        bytes32 rid = intake.requestWithFailure(
             ACTION,
             bytes(body(id)),
             IIntake.Callback({target: address(this), selector: this.onOracleResult.selector}),
+            this.onPleaFailure.selector,
             address(oracleAsset),
             ORACLE_FEE
         );
@@ -370,9 +371,13 @@ contract CabalGate is OracleAttestationConsumer {
     /// @notice Anyone may clear a pending plea that can no longer get a verdict: 20 minutes passed,
     /// or the Intake completed the request without one (the panel disagreed or refused).
     function expire(uint256 id) external {
+        if (!_stale(pleas[id])) revert NotStale();
+        _expirePending(id);
+    }
+
+    function _expirePending(uint256 id) internal {
         Plea storage p = pleas[id];
         if (p.status != Status.Pending) revert NotPending();
-        if (!_stale(p)) revert NotStale();
         _expire(id, p);
     }
 
@@ -415,6 +420,14 @@ contract CabalGate is OracleAttestationConsumer {
             lastDeniedAt[p.seller] = block.timestamp;
         }
         emit Verdict(id, approved, uint8(score), a.requestId);
+    }
+
+    /// @notice The Intake's failure function (status 1 refused, 2 no answer). Failures are unsigned,
+    /// so this only clears the plea it was asked for while it is still pending, exactly as `expire`
+    /// would: no cooldown, no verdict, no clock reset, no value moved. `expire` stays as the fallback.
+    function onPleaFailure(bytes32 intakeId, uint8, bytes32, uint16, uint16, bytes calldata) external {
+        if (msg.sender != address(intake)) revert NotIntake();
+        _expirePending(pleaOfIntake[intakeId]);
     }
 
     // ================================================================ sell
