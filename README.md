@@ -146,18 +146,25 @@ Then:
 
 2. **Open trading.** `PleaLaunch.seed()` creates the pool at a 5,700 IMD market cap and starts the Cabal. The owner may call it any time, and anyone may call it once `START` has passed.
 
-**Mainnet draft** (`launch.json` on this branch; `main` keeps the Sepolia launch #1242 settings):
+**Sepolia test run 2** (`launch.json` on this branch; the `mainnet` branch has the mainnet draft, `main` keeps launch #1242):
 
 | Setting | Value |
 |---|---|
-| IMD (pool currency and oracle fee) | `0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7` |
 | Intake v2 | `0xa43e6f75ee006411f79ac1c84120606c2330de82` |
-| Uniswap v4 PoolManager | `0x000000000004444c5dc75cb358380d2e3de08a90` |
-| Season | 15 days |
-| Dead-man | 33 hours |
-| Plea timings | 20 min, 7 min, 4 h |
-| Stacker, `START`, owner | to be set |
-| Cashback credit gas | 400,000 |
+| Oracle fee asset | test IMD `0x44a1cd38474fb1748400e7deb5f8d786cce3f89a` (open `mint`) |
+| Pool IMD | TestIMD `0x2b69099e59b05901faa1dd164fabf098bf831e82` |
+| Stacker | `0x293c7134ab8f6bf1d8ff44ed806575f8f1baf477` |
+| Season | 5 hours (fast clock for testing) |
+| Dead-man | 33 hours (real) |
+| Plea timings | real (20 min, 7 min, 4 h) |
+| `START` | 1792162800 (Fri 2026-10-16 15:00 UTC; the owner may seed earlier) |
+| Cashback credit gas | 1,300,000 (Sepolia's gas schedule) |
+
+This branch keeps the full Intake v2 failure function (explicit checks and the `PleaFailed` event); the six-contract deploy is about 21k gas over Ethereum's 16,777,216 per-transaction cap, which Sepolia does not enforce. `test/fork/ForkTestnet.t.sol` rehearses the whole run on a Sepolia fork against the live Intake v2:
+
+```
+SEPOLIA_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com forge test --match-path 'test/fork/*' -vv
+```
 
 The season length and the dead-man are constructor values so a testnet can run a fast clock. On Ethereum mainnet the gate refuses anything below 15 days and 33 hours.
 
