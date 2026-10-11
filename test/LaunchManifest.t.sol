@@ -39,7 +39,7 @@ abstract contract ManifestFixture is Test {
     address constant IMD = 0x2B69099E59b05901faA1DD164fabf098bf831E82;
     address constant SIGNER = 0x5598Aa9146215Bc13eb26f2c692Ad1461Fd32982;
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    address constant STACKER = 0x293C7134Ab8f6Bf1D8fF44Ed806575f8F1bAF477;
+    address constant STACKER = 0x0457276D7b036818B3EddC1A4A3FCeda61e9314d;
     uint256 constant START = 1792162800;
     uint256 constant SEASON = 18_000;
     uint256 constant CREDIT_GAS = 1_300_000;

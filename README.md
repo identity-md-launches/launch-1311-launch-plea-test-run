@@ -155,7 +155,7 @@ Then:
 | Intake v2 | `0xa43e6f75ee006411f79ac1c84120606c2330de82` |
 | Oracle fee asset | test IMD `0x44a1cd38474fb1748400e7deb5f8d786cce3f89a` (open `mint`) |
 | Pool IMD | TestIMD `0x2b69099e59b05901faa1dd164fabf098bf831e82` |
-| Stacker | `0x293c7134ab8f6bf1d8ff44ed806575f8f1baf477` |
+| Stacker | `0x0457276d7b036818b3eddc1a4a3fceda61e9314d` (imd/acc launch #1294) |
 | Season | 5 hours (fast clock for testing) |
 | Dead-man | 33 hours (real) |
 | Plea timings | real (20 min, 7 min, 4 h) |
