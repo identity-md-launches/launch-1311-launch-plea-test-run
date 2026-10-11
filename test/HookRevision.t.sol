@@ -250,6 +250,76 @@ contract HookRevisionTest is Fixture {
         assertLt(gap, 120, "the wall is not right below the traded price");
     }
 
+    /// @dev Second revision of the guard: a seller's limit anywhere in the liquidity-free region below the
+    /// market band (not only one spacing inside the usable range) is reached after the band's IMD is
+    /// gone. Whatever the depth, no liquidity is active there, the guard does not move on the drain nor
+    /// on the buy that brings the price back, and the wall is then placed against the market.
+    function testFuzz_aLimitAnywhereInTheLiquidityFreeRegionNeverMovesTheGuard(uint256 depth, uint256 imdBack) public {
+        depth = bound(depth, 60, 700_000);
+        imdBack = bound(imdBack, 1e18, 100e18);
+        buy(alice, 100e18);
+        _killCabal();
+        int24 g0 = hook.wallGuardTick();
+        vm.prank(address(distributor));
+        plea.transfer(alice, 50_000_000e18);
+        (int24 marketLower, int24 marketUpper,) = hook.market();
+        bool pz = hook.pleaIsZero();
+        int24 limitTick = pz ? marketLower - int24(int256(depth)) : marketUpper + int24(int256(depth));
+        assertTrue(limitTick > hook.minTick() && limitTick < hook.maxTick(), "limit outside the usable range");
+        vm.startPrank(alice);
+        plea.approve(address(router), type(uint256).max);
+        router.sellExactInLimit(50_000_000e18, abi.encode(alice), TickMath.getSqrtPriceAtTick(limitTick));
+        vm.stopPrank();
+        assertEq(hook.currentTick(), limitTick, "the sell did not stop at the seller's limit");
+        assertEq(IPoolManager(address(pm)).getLiquidity(hook.poolId()), 0, "liquidity is active at the limit");
+        assertEq(hook.wallGuardTick(), g0, "a drained tick moved the guard");
+        vm.roll(vm.getBlockNumber() + 1);
+        skip(1 hours);
+        buy(bob, imdBack);
+        assertGt(IPoolManager(address(pm)).getLiquidity(hook.poolId()), 0, "the buy did not reach the band");
+        assertEq(hook.wallGuardTick(), g0, "the restoring buy moved the guard");
+        vm.roll(vm.getBlockNumber() + 1);
+        skip(12 hours);
+        vm.startPrank(alice);
+        imd.approve(address(hook), type(uint256).max);
+        hook.fundWall(10e18);
+        vm.stopPrank();
+        vm.prank(keeper);
+        hook.rebalance();
+        (int24 lo, int24 hi, uint128 liq) = hook.wall();
+        assertGt(liq, 0, "no wall deployed");
+        int256 gap = _pleaPriceTick(hook.currentTick()) - _pleaPriceTick(pz ? hi : lo);
+        assertGe(gap, 0, "the wall is above spot");
+        assertLt(gap, 1_000, "the wall is not placed against the market");
+    }
+
+    /// @dev The other side of the same condition: a limit the seller stops at inside the liquid market
+    /// band, at any depth the band's IMD reaches, is a price PLEA traded at, and the guard (once at
+    /// the market) follows it to exactly that tick.
+    function testFuzz_aLimitInsideTheLiquidMarketBandMovesTheGuardToTheStopTick(uint256 depth) public {
+        depth = bound(depth, 1, 800);
+        buy(alice, 300e18);
+        for (uint256 i; i < 8; ++i) {
+            vm.roll(vm.getBlockNumber() + 1);
+            skip(1 days);
+            buy(bob, 1e17);
+        }
+        int24 spot = hook.currentTick();
+        assertGe(_pleaPriceTick(hook.wallGuardTick()), _pleaPriceTick(spot) - 60, "the guard did not catch up");
+        assertFalse(plea.restricted(), "the Cabal should be dead by now");
+        bool pz = hook.pleaIsZero();
+        int24 limitTick = pz ? spot - int24(int256(depth)) : spot + int24(int256(depth));
+        LimitSeller seller = _seller();
+        vm.startPrank(alice);
+        plea.approve(address(seller), type(uint256).max);
+        seller.sellExactInLimit(plea.balanceOf(alice), alice, TickMath.getSqrtPriceAtTick(limitTick));
+        vm.stopPrank();
+        int24 stopped = hook.currentTick();
+        assertEq(stopped, limitTick, "the sell did not stop at the seller's limit");
+        assertGt(IPoolManager(address(pm)).getLiquidity(hook.poolId()), 0, "the sell left the liquid band");
+        assertEq(hook.wallGuardTick(), pz ? stopped : stopped + 1, "the guard did not follow the traded price");
+    }
+
     /// @dev The extreme is ignored however often the pool is drained, and the guard does not drift.
     function testFuzz_repeatedDrainsToTheExtremeNeverMoveTheGuard(uint8 drains) public {
         drains = uint8(bound(drains, 1, 4));
