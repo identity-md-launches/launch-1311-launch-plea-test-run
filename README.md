@@ -201,3 +201,35 @@ forge test --isolate --match-path test/Launch.t.sol   # each call as its own tra
 
 - **TokenWorks** and their CabalCoin (2025), the original "plead to the Cabal to sell" token. PLEA is inspired by it. Thank you for the idea.
 - **POOL4**: `PleaHook` is a fork of POOL4's CappedBurnHook (Ethereum `0xc6c965bd164c483e87d0b550671798e9a3602840`), converted to the IMD side: IMD instead of ETH as the quote asset, trims burn 100%, and recovered IMD becomes an IMD-only buy wall.
+
+---
+
+## Website (test run 2, launch #1311)
+
+The static export is in [`dist/`](dist/index.html); its Vite + React + TypeScript + viem source and the npm lockfile are in [`web/`](web/). It continues the PLEA v10 site and adds everything new in this run: the season PLEA bonus (seasons 1–4, `BonusPaid` / `BonusBurned`, `Seasons.bonusBurned()`), Intake v2 "No verdict" records with reason and split, cashback from the Stacker's `Stacked` events, 24-decimal sIMD, one colour per verdict state, smaller type and a one-row navigation at 360 px. Pages: Overview, Buy (with Sell after the Cabal dies), Plead, Wall with permalinks, Seasons with the Hall of Fame, Profile, Status. This work changed no contract and deployed nothing.
+
+Addresses come from `web/src/deployment.json` (the verified launch manifest) plus the task-supplied auxiliary contracts in `web/src/contracts.ts`; every fee, cap and timing is read from chain. Events are indexed from launch block **11893845** over the public Sepolia RPCs with fallback.
+
+Install and preview (Node 22.12+; validated with Node 24.21.0 and npm 11.19.0):
+
+```sh
+cd web
+npm ci
+npm run dev            # http://localhost:5173
+```
+
+Check and rebuild:
+
+```sh
+cd web
+npm run typecheck      # tsc --noEmit
+npm test               # domain rules: text validation, states, bonus, gas, swaps, errors
+npm run build          # writes ../dist
+npm run preview        # serves ../dist
+```
+
+Regenerate the contract artifacts after a source change (from the repository root): `forge build --skip test --skip script`, then `node web/scripts/abis.mjs` (ABIs, checked against the pinned `abiHash` values), `node web/scripts/check-runtime.mjs` (live runtime bytecode against the build) and `node web/scripts/check-preview.mjs` (the eth_call-only preview helper). Rebuild afterwards.
+
+Browser QA (real headless Chrome through Playwright, against the built export and the live contracts): `cd web && PLEA_QA_RUN=round1 node scripts/qa.mjs`. It serves `dist/` itself under a `/preview/` subpath, walks every page at 360, 768 and 1280 px in light and dark, runs axe, checks overflow, target sizes, the first screen at 390, a 320 px reflow, the main interactions and the measured verdict-tone contrast, and writes `artifacts/browser-<run>.json`. Set `PLEA_CHROME` to another Chromium binary if `/usr/bin/google-chrome` is absent. Results and limitations of this delivery are in [`artifacts/validation.md`](artifacts/validation.md); the design is documented in [`DESIGN.md`](DESIGN.md).
+
+Publish by copying the **contents of `dist/`** (including `assets/`, the favicon, share image and licence notices) to any static host or IPFS gateway. Nothing is rebuilt on the host; Vite uses `base: './'` and the pages use hash routes (`#/plea/3`), so no server rewrites are needed. Only `web/package.json` and `web/package-lock.json` are package files; `node_modules/` is never committed.

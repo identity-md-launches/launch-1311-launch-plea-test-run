@@ -1,0 +1,101 @@
+{
+  "chainId": 11155111,
+  "sourceCommit": "fb8c0ae57aab2c270b36a61720a2f567e5183e5f",
+  "launchId": "3b03eacf-0b04-488d-9dfb-bab5b99d352a",
+  "repoUrl": "https://github.com/identity-md-launches/launch-1311-launch-plea-test-run",
+  "contracts": [
+    {
+      "name": "PLEA",
+      "address": "0x2f4ad5c8b4cd47a80356e07ef47d8ae875e9c795",
+      "txHash": "0x2a68ba654318661a7922474d26719db715300db42481dc6e6558a364e02ca47d",
+      "blockNumber": 11893845,
+      "creationCodeHash": "4eab008fb18585dab978e74d08c8e9b2665dcb7f5ed319eb3fa1a64d21565c4e",
+      "abiHash": "6e7bc83d7622e3ad1cadee6c235daa622ab1e1c71fdffb712b574b09d05d164b"
+    },
+    {
+      "name": "CabalGate",
+      "address": "0xe3717b69977d73b68aa2af798ddd4eec3609a4ed",
+      "txHash": "0x2a68ba654318661a7922474d26719db715300db42481dc6e6558a364e02ca47d",
+      "blockNumber": 11893845,
+      "creationCodeHash": "9895f9c1050c7034d7698810eefc1d618e80c50ae9cf30ff0bc9d4fe628c47fe",
+      "abiHash": "e61425b441c4cdfc0a45e39445399e3c38d3e9d5695cae830b360e6491f8cd52"
+    },
+    {
+      "name": "Seasons",
+      "address": "0xde8334d251c65a9007f290a7cb71f0c98887bc54",
+      "txHash": "0x2a68ba654318661a7922474d26719db715300db42481dc6e6558a364e02ca47d",
+      "blockNumber": 11893845,
+      "creationCodeHash": "11d41510144c4d31710fce49114d560fee1b3f3844c15d048f7d02ac0aed8d69",
+      "abiHash": "34f98fe69be4dd883c8c374b7d7991773c5582ab5d9f40cec150c69aa633e337"
+    },
+    {
+      "name": "Laureates",
+      "address": "0xd03e3fb2e916f8614891f68e2976c1481a6dc306",
+      "txHash": "0x2a68ba654318661a7922474d26719db715300db42481dc6e6558a364e02ca47d",
+      "blockNumber": 11893845,
+      "creationCodeHash": "66f368d7bf0441c1a5d37807c1e9b826833becd7806a66f31886078fa7b83ec6",
+      "abiHash": "097dfae041e8c7ea05d4dc34564cb9ea6eb2659fe19ff44d07c9fd602bcb1d27"
+    },
+    {
+      "name": "PleaDistributor",
+      "address": "0x04dd54ece5aa7771918f6c038f8e575bb774a699",
+      "txHash": "0x2a68ba654318661a7922474d26719db715300db42481dc6e6558a364e02ca47d",
+      "blockNumber": 11893845,
+      "creationCodeHash": "16029f59d9290a7a5ed2c9a4f8f3b6006b1fa8862e42904467de29e0aa7428b7",
+      "abiHash": "a7b7ac0dfcec50a5b2aab2f9267dcda521aff96e71eaf1a3f5af08ee4d5415c3"
+    },
+    {
+      "name": "PleaLaunch",
+      "address": "0x2f04b2b697b6da6c1c4db8a01f3cd0b88574b852",
+      "txHash": "0x2a68ba654318661a7922474d26719db715300db42481dc6e6558a364e02ca47d",
+      "blockNumber": 11893845,
+      "creationCodeHash": "83359b12c71853e6c029fa2cac5a7f04cc564dd4cafadadeec2a626ca755e6f7",
+      "abiHash": "e72bfd8cc92dc8a7febe783b994dbbd3f32248a9304dab76425e2e58a96e4714"
+    }
+  ],
+  "network": {
+    "chainId": 11155111,
+    "name": "Sepolia",
+    "testnet": true,
+    "rpcUrls": [
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      "https://rpc.sepolia.ethpandaops.io",
+      "https://sepolia.rpc.sentio.xyz"
+    ],
+    "explorer": "https://sepolia.etherscan.io",
+    "nativeCurrency": {
+      "name": "Sepolia Ether",
+      "symbol": "ETH",
+      "decimals": 18
+    },
+    "faucets": [
+      "https://cloud.google.com/application/web3/faucet/ethereum/sepolia",
+      "https://www.alchemy.com/faucets/ethereum-sepolia"
+    ],
+    "uniswapV4": {
+      "poolManager": "0xe03a1074c86cfedd5c142c4f04f1a1536e203543",
+      "universalRouter": "0x3a9d48ab9751398bbfa63ad67599bb04e4bdf98b",
+      "quoter": "0x61b3f2011a92d183c7dbadbda940a7555ccf9227",
+      "stateView": "0xe1dd9c3fa50edb962e442f60dfbc432e24537e4c",
+      "positionManager": "0x429ba70129df741b2ca2a85bc3a2a3328e5c09b4",
+      "permit2": "0x000000000022d473030f116ddee9f6b43ac78ba3"
+    }
+  },
+  "walletAddChain": {
+    "chainId": "0xaa36a7",
+    "chainName": "Sepolia",
+    "rpcUrls": [
+      "https://ethereum-sepolia-rpc.publicnode.com",
+      "https://rpc.sepolia.ethpandaops.io",
+      "https://sepolia.rpc.sentio.xyz"
+    ],
+    "nativeCurrency": {
+      "name": "Sepolia Ether",
+      "symbol": "ETH",
+      "decimals": 18
+    },
+    "blockExplorerUrls": [
+      "https://sepolia.etherscan.io"
+    ]
+  }
+}
