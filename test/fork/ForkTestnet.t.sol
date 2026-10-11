@@ -14,6 +14,7 @@ import {OracleAttestation} from "../../src/OracleAttestation.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
+import {FullMath} from "v4-core/libraries/FullMath.sol";
 
 interface IPoolSwapTest {
     struct TestSettings {
@@ -468,5 +469,132 @@ contract ForkTestnetTest is Test {
         assertEq(plea.balanceOf(a) - before, 1_250_000e18);
         assertEq(seasons.bonusBurned(), 5_000_000e18 + 3_750_000e18);
         assertEq(plea.balanceOf(address(seasons)), 10_000_000e18);
+
+        // the winner sells most of the prize through a plea, after the 4-hour cooldown
+        _warp(_now() + 4 hours);
+        uint256 sellAmount = 1_200_000e18;
+        assertLe(sellAmount, plea.balanceOf(a) * 35 / 100);
+        vm.prank(a);
+        uint256 id3 = gate.submitSell(sellAmount, "I won this season and I am taking part of my prize home.");
+        answer(gate.getPlea(id3).intakeId, 45);
+        uint256 balBefore = plea.balanceOf(a);
+        uint256 imdBefore = IMD.balanceOf(a);
+        vm.prank(a);
+        uint256 out = gate.executeSell(0);
+        assertEq(balBefore - plea.balanceOf(a), sellAmount, "exactly the approved amount left the wallet");
+        assertEq(IMD.balanceOf(a) - imdBefore, out);
+        assertGt(out, 0);
+    }
+
+    // ---------------------------------------------------------------- selling
+
+    /// IMD a sale of `amount` PLEA is worth at the current pool price, before fees and impact.
+    function _spotValue(uint256 amount) internal view returns (uint256) {
+        uint256 sp = hook.currentSqrtPriceX96();
+        return hook.pleaIsZero()
+            ? FullMath.mulDiv(FullMath.mulDiv(amount, sp, 1 << 96), sp, 1 << 96)
+            : FullMath.mulDiv(FullMath.mulDiv(amount, 1 << 96, sp), 1 << 96, sp);
+    }
+
+    function test_noWayToSellOrMovePleaWhileTheCabalWatches() public {
+        address a = w[0];
+        buy(a, 200e18);
+        uint256 bal = plea.balanceOf(a);
+        _swap(a, false, bal / 10, abi.encode(a), true); // router sell: SellsOnlyViaGate
+        _swap(a, false, bal / 10, "", true); // without a recipient too
+        vm.startPrank(a);
+        vm.expectRevert(PLEA.CabalIsWatching.selector);
+        plea.transfer(w[1], 1); // no wallet-to-wallet transfers
+        vm.expectRevert(PLEA.CabalIsWatching.selector);
+        plea.transfer(POOL_MANAGER, 1); // no direct sends to the PoolManager
+        vm.expectRevert(PLEA.CabalIsWatching.selector);
+        plea.transfer(address(gate), 1); // nor to the gate
+        vm.stopPrank();
+        assertEq(plea.balanceOf(a), bal);
+    }
+
+    function test_approvedSellIsExactAndFairlyPriced() public {
+        address a = w[0];
+        buy(a, 300e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        answer(rid, 45);
+        uint256 amount = gate.getPlea(id).amount;
+        uint256 spot = _spotValue(amount);
+        uint256 burned = hook.totalBurned();
+        uint256 balBefore = plea.balanceOf(a);
+        uint256 imdBefore = IMD.balanceOf(a);
+        vm.prank(a);
+        vm.expectEmit(true, true, false, false, address(gate));
+        emit CabalGate.SellExecuted(id, a, amount, 0);
+        uint256 out = gate.executeSell(0);
+        assertEq(balBefore - plea.balanceOf(a), amount);
+        assertEq(IMD.balanceOf(a) - imdBefore, out);
+        assertGt(hook.totalBurned(), burned, "the 0.25% PLEA burn was taken");
+        console2.log("sell: PLEA in", amount);
+        console2.log("sell: IMD at spot", spot);
+        console2.log("sell: IMD out", out);
+        assertLt(out, spot * 9825 / 10_000, "fees (1.75%) were charged");
+        assertGt(out, spot * 95 / 100, "fees plus impact stay small for a 5% sale");
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Executed));
+        assertEq(plea.balanceOf(address(gate)), 0);
+        assertEq(IMD.balanceOf(address(gate)), 0);
+    }
+
+    function test_sellSlippageGuardKeepsTheApproval() public {
+        address a = w[0];
+        buy(a, 300e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        answer(rid, 45);
+        uint256 bal = plea.balanceOf(a);
+        vm.prank(a);
+        vm.expectRevert(); // SlippageExceeded
+        gate.executeSell(type(uint128).max);
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Approved));
+        assertEq(plea.balanceOf(a), bal);
+        vm.prank(a);
+        gate.executeSell(1);
+        assertEq(uint8(_status(id)), uint8(CabalGate.Status.Executed));
+    }
+
+    function test_onlyTheSellerCanExecuteAndOnlyWithinSevenMinutes() public {
+        address a = w[0];
+        buy(a, 300e18);
+        buy(w[1], 300e18);
+        (uint256 id, bytes32 rid) = plead(a);
+        answer(rid, 45);
+        vm.prank(w[1]);
+        vm.expectRevert(CabalGate.NotApproved.selector);
+        gate.executeSell(0);
+        _warp(gate.getPlea(id).verdictAt + 7 minutes + 1);
+        vm.prank(a);
+        vm.expectRevert(CabalGate.WindowLapsed.selector);
+        gate.executeSell(0);
+        // the lapse starts the 4-hour cooldown
+        uint256 amt = _amount(a);
+        uint256 until = gate.getPlea(id).verdictAt + 4 hours;
+        vm.prank(a);
+        vm.expectRevert(abi.encodeWithSelector(CabalGate.Cooldown.selector, until));
+        gate.submitSell(amt, "One more try.");
+    }
+
+    function test_freeSellAfterDeathIsExactAndFairlyPriced() public {
+        address a = w[0];
+        buy(a, 300e18);
+        _warp(gate.lastVerdictAt() + DEADMAN + 1);
+        assertFalse(gate.cabalAlive());
+        uint256 amount = plea.balanceOf(a) / 2;
+        uint256 spot = _spotValue(amount);
+        uint256 imdBefore = IMD.balanceOf(a);
+        uint256 balBefore = plea.balanceOf(a);
+        _swap(a, false, amount, ""); // no recipient needed to sell once the Cabal is dead
+        uint256 out = IMD.balanceOf(a) - imdBefore;
+        assertEq(balBefore - plea.balanceOf(a), amount);
+        console2.log("free sell: IMD at spot", spot);
+        console2.log("free sell: IMD out", out);
+        assertLt(out, spot * 9825 / 10_000);
+        assertGt(out, spot * 90 / 100);
+        // and wallets can move PLEA freely
+        vm.prank(a);
+        plea.transfer(w[1], 1e18);
     }
 }
